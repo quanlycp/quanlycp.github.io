@@ -2,15 +2,12 @@ import * as S from '../state.js';
 import { pageHeader } from '../components/shell.js';
 import { toast } from '../components/toast.js';
 
-/** Màn tự đổi mật khẩu (tự chọn, dùng bất cứ lúc nào) — áp dụng cho mọi loại User: khách hàng và quản trị viên/nhân viên. */
+/** Màn tự đổi mật khẩu (tự chọn, dùng bất cứ lúc nào) — dùng chung cho owner lẫn member. */
 export function renderHeader(headerEl) {
   headerEl.innerHTML = pageHeader({ title: 'Đổi mật khẩu' });
 }
 
 export function render(contentEl) {
-  const session = S.getSession();
-  const isAdmin = session.role === 'admin';
-
   contentEl.innerHTML = `
     <div class="card card-pad" style="max-width:420px">
       <p class="text-sm text-muted mb-16">Đặt mật khẩu mới cho tài khoản của bạn. Cần nhập đúng mật khẩu hiện tại để xác nhận.</p>
@@ -43,15 +40,11 @@ export function render(contentEl) {
 
     if (pw1 !== pw2) { showErr('Mật khẩu mới nhập lại không khớp.'); return; }
 
-    const ok = isAdmin ? await S.verifyAdminPassword(session.id, pwOld) : await S.verifyCustomerPassword(session.id, pwOld);
+    const ok = await S.verifyOwnPassword(pwOld);
     if (!ok) { showErr('Mật khẩu hiện tại không đúng.'); return; }
 
     try {
-      if (isAdmin) {
-        await S.setStaffPassword(session.id, pw1);
-      } else {
-        await S.setCustomerPassword(session.id, pw1, { mustChangePassword: false });
-      }
+      await S.setOwnPassword(pw1, { mustChangePassword: false });
       toast('Đã đổi mật khẩu thành công', 'success');
       e.target.reset();
     } catch (err) { showErr(err.message || 'Có lỗi xảy ra, thử lại sau.'); }

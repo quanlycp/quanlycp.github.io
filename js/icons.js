@@ -52,6 +52,15 @@ const PATHS = {
   key: '<circle cx="7.5" cy="15.5" r="3.5"/><path d="m10 13 8.5-8.5"/><path d="m16 7 2 2M13 10l2 2"/>',
   message: '<path d="M4 5h16v11H8l-4 4V5Z"/><path d="M8 9h8M8 12h5"/>',
   sort: '<path d="M6 4v16M6 4 3 7M6 4l3 3"/><path d="M18 20V4M18 20l-3-3M18 20l3-3"/>',
+  calendar: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>',
+  piggyBank: '<ellipse cx="12" cy="13" rx="8" ry="6"/><path d="M12 7V4M9 4h3M5 12H2M17 10l2-2M7 18v2M15 18v2"/><circle cx="15" cy="11" r="1"/>',
+  film: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M3 15h18M8 4v16M16 4v16"/>',
+  heart: '<path d="M12 20s-7.5-4.6-9.8-9.4C.7 7 2.6 4 6 4c2 0 3.6 1.2 6 4 2.4-2.8 4-4 6-4 3.4 0 5.3 3 4.8 6.6C20.5 15.4 12 20 12 20Z"/>',
+  book: '<path d="M4 5c2-1 5-1 8 1 3-2 6-2 8-1v13c-2-1-5-1-8 1-3-2-6-2-8-1V5Z"/><path d="M12 6v13"/>',
+  gift: '<rect x="4" y="9" width="16" height="11" rx="1"/><path d="M2 6h20v4H2z"/><path d="M12 6v14"/><path d="M12 6c-1-3-3.5-4-5-2.5S6 6 12 6Zm0 0c1-3 3.5-4 5-2.5S18 6 12 6Z"/>',
+  trendingUp: '<path d="M3 17 10 10l4 4 7-7"/><path d="M15 6h6v6"/>',
+  trendingDown: '<path d="M3 7l7 7 4-4 7 7"/><path d="M15 18h6v-6"/>',
+  target: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.2"/>',
 };
 
 /** Trả về chuỗi SVG icon theo tên. `extraCls` bổ sung thêm (vd: 'icon-sm', 'icon-lg'). */

@@ -1,23 +1,20 @@
 import { icon } from '../icons.js';
 import { openModal } from './modal.js';
 
-export const CUSTOMER_NAV = [
-  { path: '#/', label: 'Trang chủ', shortLabel: 'Trang chủ', icon: 'landmark' },
-  { path: '#/yeu-cau-tu-van', label: 'Yêu cầu tư vấn', shortLabel: 'Yêu cầu', icon: 'clipboard' },
-  { path: '#/tai-khoan', label: 'Tài khoản', shortLabel: 'Tài khoản', icon: 'idCard' },
+export const NAV = [
+  { path: '#/', label: 'Tổng quan', shortLabel: 'Tổng quan', icon: 'chart' },
+  { path: '#/giao-dich', label: 'Giao dịch', shortLabel: 'Giao dịch', icon: 'wallet' },
+  { path: '#/ngan-sach', label: 'Ngân sách', shortLabel: 'Ngân sách', icon: 'tag' },
+  { path: '#/bao-cao', label: 'Báo cáo', shortLabel: 'Báo cáo', icon: 'trendingUp' },
+  { path: '#/dinh-ky', label: 'Định kỳ', shortLabel: 'Định kỳ', icon: 'refresh' },
+  { path: '#/tiet-kiem', label: 'Tiết kiệm', shortLabel: 'Tiết kiệm', icon: 'target' },
 ];
-
-export const ADMIN_NAV = [
-  { path: '#/admin', label: 'Tổng quan', shortLabel: 'Tổng quan', icon: 'chart' },
-  { path: '#/admin/khach-hang', label: 'Khách hàng & Hợp đồng', shortLabel: 'Khách hàng', icon: 'users' },
-  { path: '#/admin/yeu-cau', label: 'Yêu cầu tư vấn', shortLabel: 'Yêu cầu', icon: 'clipboard' },
-];
-export const ADMIN_NAV_SUPER_ONLY = [
-  { path: '#/admin/nhan-vien', label: 'Quản lý User', shortLabel: 'User', icon: 'idCard' },
-  { path: '#/admin/cai-dat', label: 'Cài đặt', shortLabel: 'Cài đặt', icon: 'settings' },
+export const NAV_OWNER_ONLY = [
+  { path: '#/nguoi-dung', label: 'Quản lý User', shortLabel: 'User', icon: 'idCard' },
+  { path: '#/cai-dat', label: 'Cài đặt', shortLabel: 'Cài đặt', icon: 'settings' },
 ];
 // Số mục tối đa hiện trực tiếp trên thanh menu dưới (mobile) — còn lại gộp vào "Thêm"
-// để không bị lệch/chồng chữ khi có nhiều mục (đặc biệt tài khoản quản trị toàn quyền).
+// để không bị lệch/chồng chữ khi có nhiều mục.
 const BOTTOM_NAV_MAX_DIRECT = 3;
 
 function matchPath(navPath, current) {
@@ -25,16 +22,16 @@ function matchPath(navPath, current) {
   return current === navPath || current.startsWith(navPath + '/');
 }
 
-export function buildShell(root, role, isSuper) {
-  const nav = role === 'admin' ? [...ADMIN_NAV, ...(isSuper ? ADMIN_NAV_SUPER_ONLY : [])] : CUSTOMER_NAV;
+export function buildShell(root, isOwner) {
+  const nav = [...NAV, ...(isOwner ? NAV_OWNER_ONLY : [])];
   root.innerHTML = `
     <div class="app-shell">
       <aside class="sidebar">
         <div class="sidebar-brand">
-          <div class="logo-mark">${icon('landmark', 'icon-sm')}</div>
+          <div class="logo-mark">${icon('wallet', 'icon-sm')}</div>
           <div>
-            <strong id="brand-name">QTD Bình Nguyên</strong>
-            <span>${role === 'admin' ? 'Trang quản trị' : 'Cổng khách hàng'}</span>
+            <strong id="brand-name">Sổ chi tiêu</strong>
+            <span>${isOwner ? 'Chủ sổ' : 'Thành viên'}</span>
           </div>
         </div>
         <nav class="sidebar-nav" id="sidebar-nav"></nav>
@@ -120,7 +117,7 @@ export function updateActiveNav(hash) {
 export function pageHeader({ title, back, actions = [] }) {
   return `
     <div class="flex items-center gap-8" style="width:100%">
-      ${back ? `<button class="icon-btn back-btn" id="btn-back">${icon('arrowLeft')}</button>` : `<div class="avatar">${icon('landmark', 'icon-sm')}</div>`}
+      ${back ? `<button class="icon-btn back-btn" id="btn-back">${icon('arrowLeft')}</button>` : `<div class="avatar">${icon('wallet', 'icon-sm')}</div>`}
       <h1>${title}</h1>
       <div class="header-actions">
         ${actions.map((a) => `<button class="icon-btn" data-action="${a.action}">${icon(a.icon)}</button>`).join('')}

@@ -1,40 +1,34 @@
 // ============================================================
-// Lớp dữ liệu & nghiệp vụ trung tâm (state) — ĐÃ KẾT NỐI SUPABASE THẬT
-// (xem docs/supabase-migration.md): đăng nhập, khách hàng/hợp đồng, tài
-// khoản, yêu cầu tư vấn, cài đặt tổ chức đều đọc/ghi qua Supabase (Edge
-// Function + Row Level Security), không còn chỉ chạy trên localStorage.
-// `state` object trong file này vẫn đóng vai trò CACHE trong bộ nhớ (để
-// giữ nguyên toàn bộ UI/view layer không cần sửa) — mọi hàm ghi đều gọi
-// Supabase trước, thành công mới cập nhật cache + notify() để vẽ lại màn
-// hình. localStorage/seedDemoData() chỉ còn dùng làm dữ liệu demo hiển
-// thị TẠM lúc app chưa kết nối được mạng, không phải nguồn sự thật nữa.
+// Lớp dữ liệu & nghiệp vụ trung tâm (state) cho app "Sổ Chi Tiêu" — kết nối
+// Supabase thật (xem docs/expense-app-setup.md): đăng nhập, danh mục, giao
+// dịch, ngân sách, giao dịch định kỳ, mục tiêu tiết kiệm, thành viên đều
+// đọc/ghi qua Supabase (Edge Function cho thao tác nhạy cảm liên quan mật
+// khẩu/tài khoản, còn lại đi thẳng qua Row Level Security). `state` object
+// trong file này đóng vai trò CACHE trong bộ nhớ (+ lưu tạm vào localStorage
+// để mở lại app không bị trắng trang / giữ được phiên đăng nhập) — mọi hàm
+// ghi đều gọi Supabase trước, thành công mới cập nhật cache + notify() để
+// vẽ lại màn hình.
 // ============================================================
-import { genId, mulberry32, randInt, addDays, daysBetween } from './utils.js';
-import { getSupabaseClient, callLoginFunction, callCreateAccountFunction, callImportDataFunction } from './lib/supabaseClient.js';
+import { genId, colorAt } from './utils.js';
+import { getSupabaseClient, callLoginFunction, callAccountFunction } from './lib/supabaseClient.js';
 
-export const STORAGE_KEY = 'qtd_demo_v3';
+export const STORAGE_KEY = 'chitieu_v1';
 
-export const REQUEST_TYPE = [
-  { id: 'vay_moi', label: 'Yêu cầu mở khoản vay mới' },
-  { id: 'tu_van', label: 'Yêu cầu tư vấn khác' },
+export const CATEGORY_ICONS = ['home', 'cart', 'truck', 'store', 'film', 'heart', 'book', 'wallet', 'gift', 'trendingUp', 'building', 'tag'];
+
+const DEFAULT_CATEGORIES = [
+  { name: 'Ăn uống', type: 'expense', icon: 'cart' },
+  { name: 'Di chuyển', type: 'expense', icon: 'truck' },
+  { name: 'Nhà ở & hóa đơn', type: 'expense', icon: 'home' },
+  { name: 'Mua sắm', type: 'expense', icon: 'store' },
+  { name: 'Giải trí', type: 'expense', icon: 'film' },
+  { name: 'Sức khỏe', type: 'expense', icon: 'heart' },
+  { name: 'Giáo dục', type: 'expense', icon: 'book' },
+  { name: 'Khác', type: 'expense', icon: 'tag' },
+  { name: 'Lương', type: 'income', icon: 'wallet' },
+  { name: 'Thưởng', type: 'income', icon: 'gift' },
+  { name: 'Thu nhập khác', type: 'income', icon: 'trendingUp' },
 ];
-export const REQUEST_STATUS = [
-  { id: 'moi', label: 'Mới', badge: 'badge-blue' },
-  { id: 'dang_xu_ly', label: 'Đang xử lý', badge: 'badge-yellow' },
-  { id: 'da_lien_he', label: 'Đã liên hệ', badge: 'badge-green' },
-];
-export const REQUEST_STATUS_MAP = Object.fromEntries(REQUEST_STATUS.map((s) => [s.id, s]));
-
-export const CONTRACT_STATUS = [
-  { id: 'dang_vay', label: 'Trong hạn', badge: 'badge-blue' },
-  { id: 'qua_han', label: 'Quá hạn', badge: 'badge-red' },
-  { id: 'da_tat_toan', label: 'Đã tất toán', badge: 'badge-green' },
-];
-export const CONTRACT_STATUS_MAP = Object.fromEntries(CONTRACT_STATUS.map((s) => [s.id, s]));
-
-const LOCK_AFTER_FAILS = 5;
-const LOCK_MINUTES = 15;
-export const NEAR_DUE_DAYS = 15;
 
 let state = null;
 const listeners = new Set();
@@ -45,775 +39,450 @@ function persist() {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
   catch (e) { console.error('Không lưu được dữ liệu', e); }
 }
-
-/** Vá dữ liệu cũ đã lưu trong localStorage từ bản trước — thêm field mới còn thiếu để tránh lỗi (VD: allowedXom). */
-function migrateState() {
-  if (!state) return;
-  (state.admins || []).forEach((a) => {
-    if (!Array.isArray(a.allowedThon)) a.allowedThon = [];
-    if (!Array.isArray(a.allowedXom)) a.allowedXom = [];
-  });
+function emptyState() {
+  return {
+    settings: { householdName: 'Sổ chi tiêu của tôi', currency: 'đ' },
+    users: [], categories: [], transactions: [], budgets: [], recurring: [], savingsGoals: [],
+    session: null,
+  };
 }
 
 export async function init() {
   const raw = localStorage.getItem(STORAGE_KEY);
   if (raw) {
-    try { state = JSON.parse(raw); migrateState(); }
-    catch (e) { console.warn('Dữ liệu lỗi, tạo lại dữ liệu mẫu.', e); await seedDemoData(); }
+    try { state = JSON.parse(raw); } catch (e) { console.warn('Dữ liệu cache lỗi, tạo lại.', e); state = emptyState(); }
   } else {
-    await seedDemoData();
+    state = emptyState();
   }
-  // Thông tin quỹ tín dụng (org) là DUY NHẤT thứ cần hiện ra TRƯỚC khi đăng
-  // nhập (màn đăng nhập hiện tên quỹ) — nên tải thẳng từ Supabase ngay lúc
-  // khởi động app, không đợi tới lúc đăng nhập như customers/contracts. Bảng
-  // orgs cho phép SELECT công khai (không nhạy cảm — banner + số tài khoản
-  // ngân hàng vốn phải công khai để khách chuyển khoản), chỉ cần anon key.
-  await loadOrgPublic();
+  // Tên sổ là DUY NHẤT thứ cần hiện ra TRƯỚC khi đăng nhập (màn đăng nhập
+  // hiện tên sổ) — tải thẳng từ Supabase ngay lúc khởi động app. Bảng
+  // app_settings cho phép SELECT công khai, chỉ cần anon key.
+  await loadSettingsPublic();
+  // Có sẵn phiên đăng nhập từ lần trước (localStorage) -> tải lại dữ liệu
+  // mới nhất từ Supabase ngay (cache cũ chỉ để vẽ tạm cho khỏi trắng trang).
+  if (state.session?.sbToken) {
+    try { await loadSessionData(state.session.sbToken); }
+    catch (e) { console.warn('Không tải lại được dữ liệu phiên cũ.', e); }
+  }
   persist();
 }
 
-async function loadOrgPublic() {
+async function loadSettingsPublic() {
   try {
     const sb = getSupabaseClient();
-    const { data } = await sb.from('orgs').select('*').limit(1).maybeSingle();
-    if (data) state.org = mapOrgRow(data);
+    const { data } = await sb.from('app_settings').select('*').eq('id', 'main').maybeSingle();
+    if (data) state.settings = mapSettingsRow(data);
   } catch (e) {
-    console.warn('Không tải được thông tin quỹ tín dụng từ Supabase, tạm dùng dữ liệu demo.', e);
+    console.warn('Không tải được tên sổ từ Supabase.', e);
   }
 }
-function mapOrgRow(row) {
-  return {
-    id: row.id, name: row.name, shortName: row.short_name, hotline: row.hotline, address: row.address,
-    bannerEnabled: !!row.banner_enabled, bannerTitle: row.banner_title || '', bannerText: row.banner_text || '',
-    bankBin: row.bank_bin || '', bankName: row.bank_name || '', bankAccountNo: row.bank_account_no || '', bankAccountName: row.bank_account_name || '',
-  };
-}
-
-export async function resetDemoData() {
-  await seedDemoData();
-  notify();
+function mapSettingsRow(row) {
+  return { householdName: row.household_name, currency: row.currency || 'đ' };
 }
 
 // ------------------------------------------------------------
-// Mật khẩu — băm bằng Web Crypto API (SHA-256 + muối), không cần thư viện ngoài.
-// Lưu ý: đây vẫn là mô hình demo (không có backend thật đứng sau).
+// Cài đặt sổ (tên sổ, đơn vị tiền) — chỉ owner sửa được (chặn bằng RLS)
 // ------------------------------------------------------------
-async function sha256Hex(text) {
-  const data = new TextEncoder().encode(text);
-  const digest = await crypto.subtle.digest('SHA-256', data);
-  return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
-}
-function randomHex(bytes) {
-  const arr = crypto.getRandomValues(new Uint8Array(bytes));
-  return Array.from(arr).map((b) => b.toString(16).padStart(2, '0')).join('');
-}
-export function genTempPassword() {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
-  const arr = crypto.getRandomValues(new Uint8Array(8));
-  return Array.from(arr).map((b) => chars[b % chars.length]).join('');
-}
-async function makeCredential(plainPassword) {
-  const salt = randomHex(8);
-  const hash = await sha256Hex(salt + ':' + plainPassword);
-  return { salt, hash };
-}
-async function verifyCredential(plainPassword, salt, hash) {
-  return (await sha256Hex(salt + ':' + plainPassword)) === hash;
-}
-
-// ------------------------------------------------------------
-// Tổ chức (thông tin quỹ tín dụng, banner) — admin chỉnh trực tiếp trong app
-// ------------------------------------------------------------
-export function getOrg() { return state.org; }
-/** Sửa thông tin quỹ tín dụng (banner/ngân hàng...) — ĐÃ CHUYỂN SANG SUPABASE THẬT, ghi thẳng qua RLS (chỉ admin role='super' được phép, xem policy trong docs). */
-export async function updateOrg(patch) {
+export function getSettings() { return state.settings; }
+export async function updateSettings(patch) {
   const session = getSession();
   const sb = getSupabaseClient(session?.sbToken);
   const dbPatch = {};
-  const map = {
-    name: 'name', shortName: 'short_name', hotline: 'hotline', address: 'address',
-    bannerEnabled: 'banner_enabled', bannerTitle: 'banner_title', bannerText: 'banner_text',
-    bankBin: 'bank_bin', bankName: 'bank_name', bankAccountNo: 'bank_account_no', bankAccountName: 'bank_account_name',
-  };
-  for (const [k, col] of Object.entries(map)) if (patch[k] !== undefined) dbPatch[col] = patch[k];
-  const { error } = await sb.from('orgs').update(dbPatch).eq('id', state.org.id);
+  if (patch.householdName !== undefined) dbPatch.household_name = patch.householdName;
+  if (patch.currency !== undefined) dbPatch.currency = patch.currency;
+  const { error } = await sb.from('app_settings').update(dbPatch).eq('id', 'main');
   if (error) throw new Error('Không lưu được cài đặt, thử lại sau.');
-  Object.assign(state.org, patch);
+  Object.assign(state.settings, patch);
   notify();
 }
 
 // ------------------------------------------------------------
-// Tách địa chỉ dạng "Xóm 01, thôn Bình Nguyên, xã Bình Sơn, tỉnh Quảng Ngãi"
-// thành từng phần theo từ khóa đầu câu — để admin lọc/phân quyền theo Thôn/Xóm
-// mà không cần người nhập liệu tự tách sẵn.
+// Đăng nhập / phiên làm việc
 // ------------------------------------------------------------
-export function parseAddress(raw) {
-  const text = String(raw || '').trim();
-  const withoutNote = text.replace(/\([^)]*\)/g, ''); // bỏ ghi chú kiểu "(Trước đây là: ...)"
-  const parts = withoutNote.split(',').map((s) => s.trim()).filter(Boolean);
-  const result = { xom: '', thon: '', xa: '', tinh: '' };
-  const rest = [];
-  for (const p of parts) {
-    const low = p.toLowerCase();
-    if (low.startsWith('xóm') || low.startsWith('xom')) result.xom = p;
-    else if (low.startsWith('thôn') || low.startsWith('thon')) result.thon = p;
-    else if (low.startsWith('xã') || low.startsWith('xa ') || low.startsWith('phường') || low.startsWith('thị trấn') || low.startsWith('huyện')) result.xa = p;
-    else if (low.startsWith('tỉnh') || low.startsWith('tp') || low.startsWith('thành phố')) result.tinh = p;
-    else rest.push(p);
+export async function login(identifier, password) {
+  const res = await callLoginFunction({ identifier, password });
+  if (!res.ok) return { ok: false, reason: res.reason };
+  await loadSessionData(res.token);
+  return { ok: true, userId: res.id, role: res.role, mustChangePassword: !!res.mustChangePassword, sbToken: res.token };
+}
+
+async function loadSessionData(token) {
+  const sb = getSupabaseClient(token);
+  const [{ data: userRows }, { data: catRows }, { data: txnRows }, { data: budgetRows }, { data: recRows }, { data: goalRows }] = await Promise.all([
+    sb.from('user_profiles').select('*'),
+    sb.from('categories').select('*').order('sort_order'),
+    sb.from('transactions').select('*').order('txn_date', { ascending: false }),
+    sb.from('budgets').select('*'),
+    sb.from('recurring_transactions').select('*'),
+    sb.from('savings_goals').select('*'),
+  ]);
+  state.users = (userRows || []).map(mapUserProfileRow);
+  state.categories = (catRows || []).map(mapCategoryRow);
+  state.transactions = (txnRows || []).map(mapTransactionRow);
+  state.budgets = (budgetRows || []).map(mapBudgetRow);
+  state.recurring = (recRows || []).map(mapRecurringRow);
+  state.savingsGoals = (goalRows || []).map(mapSavingsGoalRow);
+  if (state.categories.length === 0) await seedDefaultCategories(sb);
+}
+
+/** Lần đầu tiên chưa có danh mục nào (database Supabase mới toanh) -> tự tạo sẵn 1 bộ danh mục thường dùng, đỡ phải tự gõ từ đầu. */
+async function seedDefaultCategories(sb) {
+  const rows = DEFAULT_CATEGORIES.map((c, i) => ({
+    id: genId('cat'), name: c.name, type: c.type, icon: c.icon, color: colorAt(i), sort_order: i,
+  }));
+  const { error } = await sb.from('categories').insert(rows);
+  if (!error) state.categories = rows.map(mapCategoryRow);
+}
+
+function mapUserProfileRow(row) {
+  return { id: row.id, name: row.name, role: row.role, createdAt: row.created_at };
+}
+function mapCategoryRow(row) {
+  return {
+    id: row.id, name: row.name, type: row.type, icon: row.icon || 'tag', color: row.color || '#0f6f61',
+    monthlyBudget: row.monthly_budget != null ? Number(row.monthly_budget) : null,
+    sortOrder: row.sort_order || 0, active: row.active !== false,
+  };
+}
+function mapTransactionRow(row) {
+  return {
+    id: row.id, type: row.type, amount: Number(row.amount), categoryId: row.category_id,
+    note: row.note || '', date: row.txn_date, userId: row.user_id, recurringId: row.recurring_id,
+    createdAt: row.created_at,
+  };
+}
+function mapBudgetRow(row) {
+  return { id: row.id, year: row.year, month: row.month, categoryId: row.category_id, amount: Number(row.amount) };
+}
+function mapRecurringRow(row) {
+  return {
+    id: row.id, type: row.type, amount: Number(row.amount), categoryId: row.category_id,
+    note: row.note || '', dayOfMonth: row.day_of_month, active: row.active !== false, userId: row.user_id,
+  };
+}
+function mapSavingsGoalRow(row) {
+  return {
+    id: row.id, name: row.name, targetAmount: Number(row.target_amount), currentAmount: Number(row.current_amount || 0),
+    deadline: row.deadline, note: row.note || '', userId: row.user_id,
+  };
+}
+
+export async function verifyOwnPassword(password) {
+  const session = getSession();
+  if (!session) return false;
+  const res = await callAccountFunction(session.sbToken, { type: 'verify-own-password', password });
+  return !!(res.ok && res.valid);
+}
+export async function setOwnPassword(newPassword, opts = {}) {
+  const session = getSession();
+  const res = await callAccountFunction(session?.sbToken, { type: 'set-own-password', newPassword, mustChangePassword: !!opts.mustChangePassword });
+  if (!res.ok) throw new Error(res.reason || 'Không đổi được mật khẩu.');
+  setSession({ ...session, mustChangePassword: !!opts.mustChangePassword });
+}
+
+// ------------------------------------------------------------
+// Thành viên (owner + member) — tạo/xóa/cấp lại mật khẩu qua Edge Function
+// ------------------------------------------------------------
+export function listMembers() { return state.users; }
+export function getUser(id) { return state.users.find((u) => u.id === id); }
+export function isOwner(id) { return getUser(id)?.role === 'owner'; }
+
+export async function addMember({ username, name, password }) {
+  const session = getSession();
+  const res = await callAccountFunction(session?.sbToken, { type: 'member', username, name, password });
+  if (!res.ok) throw new Error(res.reason || 'Không tạo được tài khoản.');
+  state.users.push({ id: res.id, name: name || username, role: 'member', createdAt: new Date().toISOString() });
+  notify();
+  return { id: res.id, tempPassword: res.tempPassword };
+}
+export async function resetMemberPassword(userId, customPassword) {
+  const session = getSession();
+  const res = await callAccountFunction(session?.sbToken, { type: 'reset-member-password', userId, password: customPassword });
+  if (!res.ok) throw new Error(res.reason || 'Không cấp lại được mật khẩu.');
+  return res.tempPassword;
+}
+export async function deleteMember(userId) {
+  const session = getSession();
+  const res = await callAccountFunction(session?.sbToken, { type: 'delete-member', userId });
+  if (!res.ok) throw new Error(res.reason || 'Không xóa được tài khoản.');
+  state.users = state.users.filter((u) => u.id !== userId);
+  notify();
+}
+
+// ------------------------------------------------------------
+// Danh mục — CRUD trực tiếp qua RLS (không nhạy cảm, không cần Edge Function)
+// ------------------------------------------------------------
+export function listCategories(filters = {}) {
+  let list = state.categories.filter((c) => c.active);
+  if (filters.type) list = list.filter((c) => c.type === filters.type);
+  return list.slice().sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, 'vi'));
+}
+export function getCategory(id) { return state.categories.find((c) => c.id === id); }
+
+export async function upsertCategory({ id, name, type, icon, color, monthlyBudget }) {
+  const session = getSession();
+  const sb = getSupabaseClient(session?.sbToken);
+  const row = {
+    id: id || genId('cat'), name, type, icon: icon || 'tag', color: color || colorAt(state.categories.length),
+    monthly_budget: monthlyBudget != null && monthlyBudget !== '' ? Number(monthlyBudget) : null,
+    sort_order: id ? (getCategory(id)?.sortOrder ?? 0) : state.categories.length,
+  };
+  const { error } = await sb.from('categories').upsert(row, { onConflict: 'id' });
+  if (error) throw new Error('Không lưu được danh mục, thử lại sau.');
+  const idx = state.categories.findIndex((c) => c.id === row.id);
+  const mapped = mapCategoryRow({ ...row, active: true });
+  if (idx >= 0) state.categories[idx] = mapped; else state.categories.push(mapped);
+  notify();
+  return mapped;
+}
+/** Xóa danh mục — giao dịch/định kỳ cũ dùng danh mục này KHÔNG bị xóa theo, chỉ mất liên kết (hiện "Không rõ danh mục"). */
+export async function deleteCategory(id) {
+  const session = getSession();
+  const sb = getSupabaseClient(session?.sbToken);
+  const { error } = await sb.from('categories').delete().eq('id', id);
+  if (error) throw new Error('Không xóa được danh mục, thử lại sau.');
+  state.categories = state.categories.filter((c) => c.id !== id);
+  state.budgets = state.budgets.filter((b) => b.categoryId !== id);
+  notify();
+}
+
+// ------------------------------------------------------------
+// Giao dịch (thu/chi)
+// ------------------------------------------------------------
+export function listTransactions(filters = {}) {
+  let list = state.transactions;
+  if (filters.type) list = list.filter((t) => t.type === filters.type);
+  if (filters.categoryId) list = list.filter((t) => t.categoryId === filters.categoryId);
+  if (filters.userId) list = list.filter((t) => t.userId === filters.userId);
+  if (filters.from) list = list.filter((t) => t.date >= filters.from);
+  if (filters.to) list = list.filter((t) => t.date <= filters.to);
+  if (filters.q) {
+    const q = filters.q.trim().toLowerCase();
+    if (q) list = list.filter((t) => (t.note || '').toLowerCase().includes(q) || (getCategory(t.categoryId)?.name || '').toLowerCase().includes(q));
   }
-  // Dự phòng theo vị trí nếu không nhận ra từ khóa (địa chỉ ghi tắt, không tiền tố)
-  if (!result.tinh && parts.length) result.tinh = parts[parts.length - 1];
-  if (!result.xa && rest.length) result.xa = rest.shift();
-  if (!result.thon && parts.length >= 2) result.thon = parts[1];
-  if (!result.xom && parts.length >= 1) result.xom = parts[0];
+  return list.slice().sort((a, b) => (b.date).localeCompare(a.date) || new Date(b.createdAt) - new Date(a.createdAt));
+}
+export function getTransaction(id) { return state.transactions.find((t) => t.id === id); }
+
+export async function addTransaction({ type, amount, categoryId, note, date, recurringId }) {
+  const session = getSession();
+  const sb = getSupabaseClient(session?.sbToken);
+  const row = {
+    id: genId('txn'), type, amount: Number(amount) || 0, category_id: categoryId || null,
+    note: note || '', txn_date: date || new Date().toISOString().slice(0, 10),
+    user_id: session.id, recurring_id: recurringId || null,
+  };
+  const { error } = await sb.from('transactions').insert(row);
+  if (error) throw new Error('Không lưu được giao dịch, thử lại sau.');
+  state.transactions.unshift(mapTransactionRow({ ...row, created_at: new Date().toISOString() }));
+  notify();
+}
+export async function updateTransaction(id, { type, amount, categoryId, note, date }) {
+  const session = getSession();
+  const sb = getSupabaseClient(session?.sbToken);
+  const patch = { type, amount: Number(amount) || 0, category_id: categoryId || null, note: note || '', txn_date: date };
+  const { error } = await sb.from('transactions').update(patch).eq('id', id);
+  if (error) throw new Error('Không cập nhật được giao dịch, thử lại sau.');
+  const t = getTransaction(id);
+  if (t) Object.assign(t, { type, amount: Number(amount) || 0, categoryId: categoryId || null, note: note || '', date });
+  notify();
+}
+export async function deleteTransaction(id) {
+  const session = getSession();
+  const sb = getSupabaseClient(session?.sbToken);
+  const { error } = await sb.from('transactions').delete().eq('id', id);
+  if (error) throw new Error('Không xóa được giao dịch, thử lại sau.');
+  state.transactions = state.transactions.filter((t) => t.id !== id);
+  notify();
+}
+
+// ------------------------------------------------------------
+// Tính toán theo tháng — dashboard, ngân sách, báo cáo dùng chung
+// ------------------------------------------------------------
+export function monthKey(year, month) { return `${year}-${String(month).padStart(2, '0')}`; }
+export function monthRange(year, month) {
+  const from = `${year}-${String(month).padStart(2, '0')}-01`;
+  const lastDay = new Date(year, month, 0).getDate();
+  const to = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+  return { from, to, lastDay };
+}
+export function totalsForMonth(year, month) {
+  const { from, to } = monthRange(year, month);
+  const list = state.transactions.filter((t) => t.date >= from && t.date <= to);
+  const income = list.filter((t) => t.type === 'income').reduce((s, t) => s + t.amount, 0);
+  const expense = list.filter((t) => t.type === 'expense').reduce((s, t) => s + t.amount, 0);
+  return { income, expense, balance: income - expense };
+}
+/** Tổng chi theo từng danh mục trong tháng — Map<categoryId, số tiền>. */
+export function expenseByCategoryForMonth(year, month) {
+  const { from, to } = monthRange(year, month);
+  const map = new Map();
+  for (const t of state.transactions) {
+    if (t.type !== 'expense' || t.date < from || t.date > to) continue;
+    map.set(t.categoryId, (map.get(t.categoryId) || 0) + t.amount);
+  }
+  return map;
+}
+/** Dự báo tổng chi cuối tháng dựa trên tốc độ chi tiêu hiện tại (chỉ có ý nghĩa với tháng hiện tại). */
+export function forecastExpense(year, month, asOf = new Date()) {
+  const { lastDay } = monthRange(year, month);
+  const dayOfMonth = Math.min(asOf.getDate(), lastDay);
+  const { expense } = totalsForMonth(year, month);
+  if (dayOfMonth <= 0) return expense;
+  return Math.round((expense / dayOfMonth) * lastDay);
+}
+/** Tổng thu/chi 6 tháng gần nhất (tính cả tháng hiện tại) — mới nhất ở cuối mảng, dùng cho biểu đồ xu hướng. */
+export function last6MonthsTotals(asOf = new Date()) {
+  const result = [];
+  for (let i = 5; i >= 0; i--) {
+    const d = new Date(asOf.getFullYear(), asOf.getMonth() - i, 1);
+    const y = d.getFullYear(), m = d.getMonth() + 1;
+    result.push({ year: y, month: m, ...totalsForMonth(y, m) });
+  }
   return result;
 }
 
 // ------------------------------------------------------------
-// Khách hàng
+// Ngân sách hàng tháng theo danh mục
 // ------------------------------------------------------------
-export function listCustomers(filters = {}) {
-  let list = state.customers;
-  const thonList = [].concat(filters.thon || []).filter(Boolean);
-  const xomList = [].concat(filters.xom || []).filter(Boolean);
-  if (thonList.length) list = list.filter((c) => thonList.includes(c.thon));
-  if (xomList.length) list = list.filter((c) => xomList.includes(c.xom));
-  if (filters.adminId) {
-    const admin = getAdmin(filters.adminId);
-    if (admin && admin.role === 'staff') {
-      const allowedThon = new Set(admin.allowedThon || []);
-      const allowedXom = new Set(admin.allowedXom || []);
-      list = list.filter((c) => allowedThon.has(c.thon) || allowedXom.has(c.xom));
+/** Hạn mức ĐANG ÁP DỤNG cho 1 danh mục trong tháng: ưu tiên số đã đặt riêng cho tháng đó, không có thì lấy mặc định của danh mục (có thể null = chưa đặt hạn mức). */
+export function effectiveBudget(categoryId, year, month) {
+  const override = state.budgets.find((b) => b.categoryId === categoryId && b.year === year && b.month === month);
+  if (override) return override.amount;
+  return getCategory(categoryId)?.monthlyBudget ?? null;
+}
+/** Danh sách đầy đủ: mỗi danh mục chi tiêu + hạn mức đang áp dụng + đã chi trong tháng + % đã dùng. */
+export function budgetOverviewForMonth(year, month) {
+  const spentMap = expenseByCategoryForMonth(year, month);
+  return listCategories({ type: 'expense' }).map((cat) => {
+    const limit = effectiveBudget(cat.id, year, month);
+    const spent = spentMap.get(cat.id) || 0;
+    return { category: cat, limit, spent, percent: limit ? Math.round((spent / limit) * 100) : null, over: limit != null && spent > limit };
+  });
+}
+export async function setBudget(year, month, categoryId, amount) {
+  const session = getSession();
+  const sb = getSupabaseClient(session?.sbToken);
+  const existing = state.budgets.find((b) => b.categoryId === categoryId && b.year === year && b.month === month);
+  if (amount == null || amount === '') {
+    // Bỏ trống -> xóa override, quay về dùng hạn mức mặc định của danh mục (nếu có).
+    if (existing) {
+      const { error } = await sb.from('budgets').delete().eq('id', existing.id);
+      if (error) throw new Error('Không xóa được ngân sách, thử lại sau.');
+      state.budgets = state.budgets.filter((b) => b.id !== existing.id);
+      notify();
     }
+    return;
   }
-  return list;
-}
-export function getCustomer(id) { return state.customers.find((c) => c.id === id); }
-export function findCustomerByCccd(cccd) { return state.customers.find((c) => c.cccd === String(cccd).trim()); }
-/** Tìm khách hàng theo CCCD HOẶC số điện thoại — dùng cho đăng nhập, khách có thể dùng 1 trong 2 số. */
-export function findCustomerByIdentifier(value) {
-  const v = String(value || '').trim();
-  const vNoSpace = v.replace(/\s/g, '');
-  return state.customers.find((c) => c.cccd === v || (c.phone && c.phone.replace(/\s/g, '') === vNoSpace));
-}
-
-export function listContractsByCustomer(customerId) {
-  return state.contracts.filter((c) => c.customerId === customerId).sort((a, b) => new Date(b.disbursedDate) - new Date(a.disbursedDate));
-}
-export function getContract(id) { return state.contracts.find((c) => c.id === id); }
-
-export function customerOutstandingTotal(customerId) {
-  return listContractsByCustomer(customerId)
-    .filter((c) => effectiveContractStatus(c) !== 'da_tat_toan')
-    .reduce((s, c) => s + c.balance, 0);
-}
-
-/**
- * Trạng thái THỰC TẾ của hợp đồng — tính trực tiếp từ dư nợ + ngày đến hạn,
- * không phụ thuộc trường "status" lưu sẵn (file Excel thật không có cột
- * trạng thái nên trường đó luôn là 'dang_vay' lúc nhập, không tự cập nhật
- * theo thời gian). Coi là:
- * - "Đã tất toán" nếu dư nợ ≤ 0.
- * - "Quá hạn" nếu còn dư nợ và đã qua ngày đến hạn.
- * - "Trong hạn" (id nội bộ vẫn là 'dang_vay') các trường hợp còn lại.
- */
-export function effectiveContractStatus(contract, asOf = new Date()) {
-  if ((contract.balance || 0) <= 0) return 'da_tat_toan';
-  if (daysBetween(new Date(contract.dueDate), asOf) > 0) return 'qua_han';
-  return 'dang_vay';
-}
-
-/** 'qua_han' | 'gan_den_han' | null — mức cần chú ý của 1 hợp đồng, dùng để gắn badge/lọc. */
-export function contractUrgency(contract, asOf = new Date()) {
-  const status = effectiveContractStatus(contract, asOf);
-  if (status === 'qua_han') return 'qua_han';
-  if (status === 'dang_vay') {
-    const d = daysBetween(asOf, new Date(contract.dueDate));
-    if (d >= 0 && d <= NEAR_DUE_DAYS) return 'gan_den_han';
-  }
-  return null;
-}
-
-/**
- * Số ngày tính lãi — tính bình thường (số ngày từ "Thu lãi đến ngày" tới hôm
- * nay), TRỪ trường hợp đặc biệt "Thu lãi đến ngày" = ngày giải ngân + 1 ngày
- * (quy ước thu lãi ngày đầu ngay lúc giải ngân) thì cộng thêm 1 ngày nữa.
- * VD: giải ngân 17/08, thu lãi đến ngày 18/08 (= giải ngân + 1), hôm nay
- * 19/08 -> bình thường ra 1 ngày, cộng thêm 1 ngày đặc biệt = 2 ngày.
- */
-export function interestDaysAccrued(contract, asOf = new Date()) {
-  const paidUntil = contract.interestPaidUntil || contract.disbursedDate;
-  let days = Math.max(0, daysBetween(new Date(paidUntil), asOf));
-  if (contract.disbursedDate && daysBetween(new Date(contract.disbursedDate), new Date(paidUntil)) === 1) {
-    days += 1;
-  }
-  return days;
-}
-/**
- * Lãi phát sinh từ ngày đã trả lãi đến ngày hiện tại.
- * Công thức: Số dư × số ngày × lãi suất năm / 365, làm tròn đến HÀNG NGHÌN
- * gần nhất (VD: 81.500 -> 82.000; 81.350 -> 81.000).
- */
-export function accruedInterest(contract, asOf = new Date()) {
-  if (effectiveContractStatus(contract, asOf) === 'da_tat_toan') return 0;
-  const days = interestDaysAccrued(contract, asOf);
-  const raw = contract.balance * days * (contract.interestRate / 100) / 365;
-  return Math.round(raw / 1000) * 1000;
-}
-
-/**
- * Đăng nhập khách hàng bằng CCCD HOẶC số điện thoại + mật khẩu.
- * ĐÃ CHUYỂN SANG SUPABASE THẬT (xem docs/supabase-migration.md) — không còn
- * kiểm tra mật khẩu ở đây nữa, mà gọi Edge Function "login" (chạy phía
- * server, an toàn dù chưa có OTP). Đúng mật khẩu thì tải luôn hồ sơ + toàn
- * bộ hợp đồng của khách đó từ Supabase vào state (THAY HẲN dữ liệu demo cũ)
- * để các màn hình khác (dashboard, chi tiết hợp đồng...) dùng lại y nguyên,
- * không cần sửa gì thêm. Vé (JWT) trả về trong "sbToken" — nơi gọi hàm này
- * (login.js) cần lưu vào session để dùng cho các lần gọi Supabase sau.
- *
- * LƯU Ý (giai đoạn chuyển tiếp): mới migrate riêng phần đăng nhập + xem hợp
- * đồng của khách hàng. Đăng nhập quản trị viên/nhân viên, yêu cầu tư vấn,
- * và mọi thao tác ghi khác VẪN đang chạy trên dữ liệu demo cục bộ như cũ —
- * sẽ chuyển tiếp ở các bước sau.
- */
-export async function loginCustomer(identifier, password) {
-  const res = await callLoginFunction({ role: 'customer', identifier, password });
-  if (!res.ok) return { ok: false, reason: res.reason };
-  await loadCustomerSessionData(res.id, res.token);
-  return { ok: true, customerId: res.id, mustChangePassword: !!res.mustChangePassword, sbToken: res.token };
-}
-
-/** Tải hồ sơ + toàn bộ hợp đồng của 1 khách hàng từ Supabase, thay hoàn toàn state.customers/state.contracts. */
-async function loadCustomerSessionData(customerId, token) {
-  const sb = getSupabaseClient(token);
-  const [{ data: custRow }, { data: contractRows }, { data: requestRows }] = await Promise.all([
-    sb.from('customers').select('*').eq('id', customerId).maybeSingle(),
-    sb.from('contracts').select('*').eq('customer_id', customerId),
-    sb.from('requests').select('*').eq('customer_id', customerId),
-  ]);
-  state.customers = custRow ? [mapCustomerRow(custRow)] : [];
-  state.contracts = (contractRows || []).map(mapContractRow);
-  state.requests = (requestRows || []).map(mapRequestRow);
-}
-
-/** snake_case (cột Postgres) -> camelCase (đúng field app đang dùng khắp nơi). */
-function mapCustomerRow(row) {
-  return {
-    id: row.id, cccd: row.cccd, name: row.name, phone: row.phone || '', address: row.address || '',
-    thon: row.thon || '', xom: row.xom || '', xa: row.xa || '', tinh: row.tinh || '',
-    salt: row.salt, hash: row.hash,
-    mustChangePassword: !!row.must_change_password,
-    failedAttempts: row.failed_attempts || 0,
-    lockedUntil: row.locked_until ? new Date(row.locked_until).getTime() : null,
-    createdAt: row.created_at,
-  };
-}
-function mapContractRow(row) {
-  return {
-    id: row.id, customerId: row.customer_id, code: row.code,
-    principal: Number(row.principal), balance: Number(row.balance),
-    disbursedDate: row.disbursed_date, dueDate: row.due_date,
-    interestRate: Number(row.interest_rate),
-    interestPaidUntil: row.interest_paid_until,
-  };
-}
-
-/** Kiểm tra mật khẩu hiện tại của khách hàng — ĐÃ CHUYỂN SANG SUPABASE THẬT qua Edge Function (chỉ tự xác minh chính mình). */
-export async function verifyCustomerPassword(customerId, password) {
-  const session = getSession();
-  if (!session || session.id !== customerId) return false;
-  const res = await callCreateAccountFunction(session.sbToken, { type: 'verify-own-password', password });
-  return !!(res.ok && res.valid);
-}
-
-/** ĐÃ CHUYỂN SANG SUPABASE THẬT qua Edge Function (tự đổi mật khẩu chính mình, không cần quyền super). */
-export async function setCustomerPassword(customerId, newPassword, opts = {}) {
-  const session = getSession();
-  const res = await callCreateAccountFunction(session?.sbToken, {
-    type: 'set-own-password', newPassword, mustChangePassword: !!opts.mustChangePassword,
-  });
-  if (!res.ok) throw new Error(res.reason || 'Không đổi được mật khẩu.');
-  const c = getCustomer(customerId);
-  if (c) { c.mustChangePassword = !!opts.mustChangePassword; c.tempPassword = null; }
+  const row = { id: existing ? existing.id : genId('bud'), year, month, category_id: categoryId, amount: Number(amount) };
+  const { error } = await sb.from('budgets').upsert(row, { onConflict: 'id' });
+  if (error) throw new Error('Không lưu được ngân sách, thử lại sau.');
+  const mapped = mapBudgetRow(row);
+  const idx = state.budgets.findIndex((b) => b.id === mapped.id);
+  if (idx >= 0) state.budgets[idx] = mapped; else state.budgets.push(mapped);
   notify();
 }
-
-/** Admin cấp lại mật khẩu cho khách — có thể tự nhập mật khẩu cụ thể, để trống thì tự sinh ngẫu nhiên. */
-/** Admin cấp lại mật khẩu cho khách hàng — ĐÃ CHUYỂN SANG SUPABASE THẬT qua Edge Function "create-account". */
-export async function adminResetCustomerPassword(customerId, customPassword) {
-  const session = getSession();
-  const res = await callCreateAccountFunction(session?.sbToken, { type: 'reset-customer-password', customerId, password: customPassword });
-  if (!res.ok) throw new Error(res.reason || 'Không cấp lại được mật khẩu.');
-  const c = getCustomer(customerId);
-  if (c) { c.mustChangePassword = true; c.failedAttempts = 0; c.lockedUntil = null; }
-  notify();
-  return res.tempPassword;
-}
-
-/**
- * Tạo/cập nhật HỒ SƠ khách hàng (tên, SĐT, địa chỉ) — KHÔNG đụng đến tài
- * khoản đăng nhập. Dùng cho luồng nhập từ Excel: file chỉ cho biết ai đang
- * có khoản vay, không phải là nơi cấp tài khoản. Nếu khách chưa từng được
- * "Tạo User" thì hồ sơ này chưa đăng nhập được (salt/hash rỗng) — vẫn xem
- * là 1 khách hàng hợp lệ để gắn hợp đồng vào, admin có thể tạo tài khoản
- * cho họ sau bất cứ lúc nào qua nút "Tạo User" (không mất dữ liệu hợp đồng).
- */
-/**
- * Phần lõi của upsertCustomerProfile — KHÔNG gọi notify(). Dùng khi cần gộp
- * nhiều thay đổi lại rồi chỉ notify() 1 lần ở cuối (VD: nhập cả trăm dòng từ
- * Excel cùng lúc — gọi notify() riêng từng dòng sẽ rất chậm vì mỗi lần đều
- * lưu localStorage + vẽ lại toàn bộ trang).
- */
-function upsertCustomerProfileCore({ cccd, name, phone, address }, existing) {
-  const parsed = address != null ? parseAddress(address) : null;
-  const phoneClean = phone != null ? String(phone).replace(/\s/g, '') : phone;
-  let c = existing !== undefined ? existing : findCustomerByCccd(cccd);
-  if (c) {
-    c.name = name || c.name;
-    c.phone = phoneClean || c.phone;
-    if (address) { c.address = address; Object.assign(c, parsed); }
-    return { customer: c, isNew: false };
-  }
-  c = {
-    id: genId('cust'), cccd: String(cccd).trim(), name: name || '', phone: phoneClean || '',
-    address: address || '', ...(parsed || { xom: '', thon: '', xa: '', tinh: '' }),
-    salt: null, hash: null, mustChangePassword: false, tempPassword: null,
-    failedAttempts: 0, lockedUntil: null, createdAt: new Date().toISOString(),
-  };
-  state.customers.push(c);
-  return { customer: c, isNew: true };
-}
-/** Admin sửa hồ sơ khách hàng (tên/SĐT/địa chỉ) — ĐÃ CHUYỂN SANG SUPABASE THẬT qua Edge Function "create-account". */
-export async function upsertCustomerProfile({ cccd, name, phone, address }) {
-  const session = getSession();
-  const res = await callCreateAccountFunction(session?.sbToken, { type: 'update-customer-profile', cccd, name, phone, address });
-  if (!res.ok) throw new Error(res.reason || 'Không cập nhật được hồ sơ.');
-  const c = findCustomerByCccd(cccd);
-  if (c) {
-    if (name) c.name = name;
-    if (phone) c.phone = String(phone).replace(/\s/g, '');
-    if (address) { c.address = address; Object.assign(c, parseAddress(address)); }
-  }
-  notify();
-  return { customer: c };
-}
-
-/**
- * "Tạo User" — cấp tài khoản đăng nhập (CCCD + mật khẩu) cho 1 khách hàng.
- * Nếu CCCD đã có hồ sơ sẵn (từ Excel) thì chỉ gắn thêm tài khoản vào đúng
- * hồ sơ đó (giữ nguyên tên/địa chỉ/hợp đồng đã có) — khách đăng nhập là tự
- * thấy ngay mọi hợp đồng khớp CCCD, không cần làm gì thêm. Nếu CCCD chưa có
- * hồ sơ nào thì tạo mới (chỉ cần CCCD, tên tùy chọn — không cần địa chỉ).
- */
-/**
- * Tạo tài khoản đăng nhập cho khách hàng — ĐÃ CHUYỂN SANG SUPABASE THẬT,
- * gọi Edge Function "create-account" (chỉ admin role='super' gọi được,
- * xác minh ngay tại server — xem docs/supabase-migration.md mục 5). Tạo
- * xong tải lại đúng dòng khách hàng đó từ Supabase để đồng bộ vào state.
- */
-export async function activateCustomerAccount({ cccd, name, phone, password }) {
-  const session = getSession();
-  const res = await callCreateAccountFunction(session?.sbToken, { type: 'customer', cccd, name, phone, password });
-  if (!res.ok) throw new Error(res.reason || 'Không tạo được tài khoản.');
-  const sb = getSupabaseClient(session.sbToken);
-  const { data: row } = await sb.from('customers').select('*').eq('id', res.id).maybeSingle();
-  const customer = row ? mapCustomerRow(row) : { id: res.id, cccd };
-  const idx = state.customers.findIndex((c) => c.id === customer.id);
-  if (idx >= 0) state.customers[idx] = customer; else state.customers.push(customer);
-  notify();
-  return { customer, tempPassword: res.tempPassword };
-}
-
-/**
- * "Xóa Use" — chỉ gỡ TÀI KHOẢN ĐĂNG NHẬP (mật khẩu/salt/hash), KHÔNG đụng gì
- * đến hồ sơ khách hàng hay hợp đồng — 2 thứ đó độc lập với tài khoản đăng
- * nhập. Khách trở lại trạng thái "chỉ có hồ sơ" như mới nhập từ Excel, admin
- * có thể "Tạo User" lại bất cứ lúc nào mà không mất dữ liệu hợp đồng.
- */
-/** "Xóa Use" — ĐÃ CHUYỂN SANG SUPABASE THẬT qua Edge Function "create-account". */
-export async function deactivateCustomerAccount(customerId) {
-  const session = getSession();
-  const res = await callCreateAccountFunction(session?.sbToken, { type: 'deactivate-customer', customerId });
-  if (!res.ok) throw new Error(res.reason || 'Không xóa được Use.');
-  const c = getCustomer(customerId);
-  if (c) { c.salt = null; c.hash = null; c.mustChangePassword = false; c.tempPassword = null; c.failedAttempts = 0; c.lockedUntil = null; }
-  notify();
-}
-
-/** Danh sách các Thôn / Xóm đang có trong dữ liệu khách hàng (dùng để lọc & gán quyền). */
-/**
- * So sánh tên Xóm kiểu "tự nhiên" theo số — Xóm thường đặt tên bằng số (có
- * khi kèm số phụ dạng "8/1", "8/2"): sắp đúng thứ tự 01, 02, 03, 08, 8/1,
- * 8/2, 09, 10... thay vì so chuỗi kiểu chữ cái (sẽ ra "01, 09, 10, 8/1..."
- * sai thứ tự vì "1" < "8" < "9" theo ký tự).
- */
-function naturalXomCompare(a, b) {
-  const parse = (s) => {
-    const m = String(s).match(/(\d+)(?:\s*\/\s*(\d+))?/);
-    return m ? [parseInt(m[1], 10), m[2] ? parseInt(m[2], 10) : 0] : [Infinity, 0];
-  };
-  const [aMajor, aMinor] = parse(a);
-  const [bMajor, bMinor] = parse(b);
-  if (aMajor !== bMajor) return aMajor - bMajor;
-  if (aMinor !== bMinor) return aMinor - bMinor;
-  return String(a).localeCompare(String(b), 'vi');
-}
-export function distinctThon() {
-  return [...new Set(state.customers.map((c) => c.thon).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'vi'));
-}
-export function distinctXom(thon) {
-  const thonList = [].concat(thon || []).filter(Boolean);
-  const list = thonList.length ? state.customers.filter((c) => thonList.includes(c.thon)) : state.customers;
-  return [...new Set(list.map((c) => c.xom).filter(Boolean))].sort(naturalXomCompare);
-}
-/** Cây Thôn -> danh sách Xóm trong thôn đó — dùng cho phân quyền nhân viên theo từng cấp. */
-export function thonXomTree() {
-  return distinctThon().map((thon) => ({ thon, xomList: distinctXom(thon) }));
-}
-
-/** Sinh mã hợp đồng tự động khi không có sẵn (không bắt buộc phải nhập). */
-function autoContractCode(cccd) {
-  const n = state.contracts.filter((c) => c.autoCode).length + 1;
-  return `HD-${cccd}-${String(n).padStart(3, '0')}`;
-}
-
-/** Phần lõi của upsertContract — KHÔNG gọi notify() (xem ghi chú ở upsertCustomerProfileCore). */
-function upsertContractCore({ customerId, code, principal, disbursedDate, dueDate, interestRate, balance, status, interestPaidUntil }, existing) {
-  const customer = getCustomer(customerId);
-  const bal = Number(balance) || 0;
-  let ct = existing !== undefined ? existing : (code ? state.contracts.find((c) => c.code === code) : null);
-  const data = {
-    customerId,
-    code: code || (ct ? ct.code : autoContractCode(customer?.cccd || customerId)),
-    autoCode: !code,
-    principal: principal != null && principal !== '' ? Number(principal) || 0 : bal, // mặc định = dư nợ nếu không có số tiền vay gốc
-    disbursedDate,
-    dueDate: dueDate || addDays(new Date(disbursedDate), 365).toISOString().slice(0, 10), // mặc định 1 năm nếu Excel không có
-    interestRate: interestRate != null && interestRate !== '' ? Number(interestRate) || 0 : (ct ? ct.interestRate : 0),
-    balance: bal, status: status || 'dang_vay',
-    interestPaidUntil: interestPaidUntil || disbursedDate,
-  };
-  if (ct) { Object.assign(ct, data); }
-  else { ct = { id: genId('hd'), ...data }; state.contracts.push(ct); }
-  return ct;
-}
-export function upsertContract(args) {
-  const ct = upsertContractCore(args);
-  notify();
-  return ct;
-}
-
-/** ĐÃ CHUYỂN SANG SUPABASE THẬT qua Edge Function "create-account" — hợp đồng tự xóa theo (FK cascade). */
-export async function deleteCustomer(id) {
-  const session = getSession();
-  const res = await callCreateAccountFunction(session?.sbToken, { type: 'delete-customer', customerId: id });
-  if (!res.ok) throw new Error(res.reason || 'Không xóa được khách hàng.');
-  state.customers = state.customers.filter((c) => c.id !== id);
-  state.contracts = state.contracts.filter((c) => c.customerId !== id);
-  notify();
-}
-/** ĐÃ CHUYỂN SANG SUPABASE THẬT qua Edge Function "create-account". */
-export async function deleteContract(id) {
-  const session = getSession();
-  const res = await callCreateAccountFunction(session?.sbToken, { type: 'delete-contract', contractId: id });
-  if (!res.ok) throw new Error(res.reason || 'Không xóa được hợp đồng.');
-  state.contracts = state.contracts.filter((c) => c.id !== id);
-  pruneEmptyCustomerProfiles(); // hết hợp đồng mà chưa có tài khoản Use thì dọn luôn hồ sơ (chỉ ở local cache)
-  notify();
+/** Sao chép toàn bộ hạn mức đã đặt riêng ở tháng trước sang tháng đang chọn (đỡ phải gõ lại từ đầu mỗi tháng). */
+export async function copyBudgetsFromPreviousMonth(year, month) {
+  const prev = month === 1 ? { year: year - 1, month: 12 } : { year, month: month - 1 };
+  const prevBudgets = state.budgets.filter((b) => b.year === prev.year && b.month === prev.month);
+  for (const b of prevBudgets) await setBudget(year, month, b.categoryId, b.amount);
+  return prevBudgets.length;
 }
 
 // ------------------------------------------------------------
-// Nhập dữ liệu từ bảng (đọc trực tiếp file .xlsx/.xls hoặc dán dữ liệu copy
-// từ Excel) — đúng thứ tự cột theo mẫu sổ theo dõi vay đang dùng:
-// Số HĐTD | Người nhận nợ | Địa chỉ | Số CMND/CCCD | Số di động |
-// Ngày nhận nợ | Ngày đáo hạn | Thu lãi đến ngày | Số tiền giải ngân |
-// Số dư | Lãi suất
-// (địa chỉ tự tách Xóm/Thôn/Tỉnh; cột nào thiếu dữ liệu sẽ tự tính/tự sinh)
+// Giao dịch định kỳ (tiền điện, lương, thuê nhà...) — tự nhắc, không tự ý ghi sổ
 // ------------------------------------------------------------
-export function parseVNNumber(str) {
-  let s = String(str ?? '').trim().replace(/[^\d.,-]/g, '');
-  if (!s) return 0;
-  // "42.500.000" kiểu VN (chấm ngăn cách hàng nghìn, đúng từng nhóm 3 số) -> bỏ chấm
-  if (/^-?\d{1,3}(\.\d{3})+$/.test(s)) s = s.replace(/\./g, '');
-  else if (s.includes(',') && s.includes('.')) s = s.replace(/\./g, '').replace(',', '.'); // "1.234.567,89"
-  else if (s.includes(',')) s = s.replace(',', '.'); // chỉ có phẩy -> coi là dấu thập phân
-  // còn lại (vd "9.5" từ ô số của Excel/JS): giữ nguyên dấu chấm làm phần thập phân
-  const n = parseFloat(s);
-  return Number.isFinite(n) ? n : 0;
-}
-export function parseVNDate(str) {
-  const s = String(str || '').trim();
-  const m = s.match(/^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})$/);
-  if (m) {
-    let [, d, mo, y] = m;
-    if (y.length === 2) y = '20' + y;
-    return `${y}-${mo.padStart(2, '0')}-${d.padStart(2, '0')}`;
-  }
-  // Số serial ngày kiểu Excel (ô định dạng Ngày tháng khi đọc từ file .xlsx sẽ ra số thuần)
-  if (/^\d{4,6}$/.test(s)) {
-    const dt = new Date(Date.UTC(1899, 11, 30) + Number(s) * 86400000);
-    if (!Number.isNaN(dt.getTime())) return dt.toISOString().slice(0, 10);
-  }
-  const dt = new Date(s);
-  return Number.isNaN(dt.getTime()) ? '' : dt.toISOString().slice(0, 10);
-}
-
-/**
- * Dọn hồ sơ khách hàng không còn dư nợ nào (hết hợp đồng, hoặc còn hợp đồng
- * nhưng tổng dư nợ = 0, đã tất toán hết) VÀ chưa có tài khoản Use — xóa luôn
- * khỏi mục Khách hàng, kèm dọn theo các hợp đồng dư nợ 0 còn sót của họ. Use
- * thì LUÔN giữ lại dù hết dư nợ (2 thứ độc lập với nhau).
- */
-function pruneEmptyCustomerProfiles() {
-  const balanceByCustomer = new Map();
-  for (const ct of state.contracts) {
-    balanceByCustomer.set(ct.customerId, (balanceByCustomer.get(ct.customerId) || 0) + (ct.balance || 0));
-  }
-  const keepIds = new Set(
-    state.customers.filter((c) => (balanceByCustomer.get(c.id) || 0) > 0 || (c.salt && c.hash)).map((c) => c.id)
-  );
-  const before = state.customers.length;
-  state.customers = state.customers.filter((c) => keepIds.has(c.id));
-  state.contracts = state.contracts.filter((ct) => keepIds.has(ct.customerId));
-  return before - state.customers.length;
-}
-
-const HEADER_HINTS = ['cccd', 'cmnd', 'người nhận nợ', 'nguoi nhan no', 'họ tên', 'ho ten', 'số hđtd', 'so hdtd'];
-/**
- * Nhập dữ liệu hợp đồng từ Excel/dữ liệu dán — coi file/dữ liệu nhập là
- * NGUỒN SỰ THẬT mới nhất: tên/SĐT/địa chỉ luôn được cập nhật ghi đè theo
- * đúng dữ liệu vừa nhập cho MỌI khách hàng khớp CCCD (dù mới hay đã có sẵn
- * hồ sơ/tài khoản) — Use đã tạo trước cho CCCD đó lần đăng nhập sau sẽ tự
- * thấy ngay thông tin mới vì dùng chung 1 hồ sơ.
- * - CCCD CHƯA từng có trong hệ thống -> ngoài tạo hồ sơ còn tự cấp luôn tài
- *   khoản Use (mật khẩu tự sinh ngẫu nhiên, trả về trong result.newAccounts
- *   để hiện cho admin gửi khách).
- * - CCCD ĐÃ có sẵn -> chỉ cập nhật hồ sơ + hợp đồng, KHÔNG đụng đến tài
- *   khoản đăng nhập đã cấp (mật khẩu vẫn giữ nguyên).
- * Khi `fullSync` bật (dùng cho tải file Excel) — coi file là danh sách ĐẦY ĐỦ
- * hiện tại: hợp đồng nào đang có trong hệ thống mà KHÔNG xuất hiện trong
- * lần nhập này sẽ bị XÓA, để danh sách hợp đồng luôn khớp đúng file mới
- * nhất; khách hàng nào sau đó không còn dư nợ nào và cũng chưa có tài
- * khoản Use thì dọn luôn hồ sơ (xem pruneEmptyCustomerProfiles). Không bật
- * fullSync với kiểu dán tay (chỉ thêm/cập nhật, không xóa/dọn gì).
- */
-/**
- * Nhập dữ liệu từ Excel/dán tay — ĐÃ CHUYỂN SANG SUPABASE THẬT. Trình duyệt
- * chỉ còn lo tách cột + parse ngày/số (KHÔNG nhạy cảm, giữ nguyên logic cũ ở
- * đây) — việc GHI vào database (đặc biệt tự tạo tài khoản cho khách hoàn
- * toàn mới) chuyển hết sang Edge Function "import-data" (xem
- * docs/supabase-migration.md), vì đó là hành động nhạy cảm cần xác minh
- * đúng người gọi có quyền "super" tại server.
- */
-export async function importFromPastedTable(text, { fullSync = false } = {}) {
-  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-  const rows = [];
-  let skipped = 0;
-  const parseErrors = [];
-  for (const line of lines) {
-    const cells = line.includes('\t') ? line.split('\t') : line.split(',');
-    if (cells.length < 2) { skipped++; continue; }
-    const headerCheck = cells.slice(0, 2).join(' ').toLowerCase();
-    if (HEADER_HINTS.some((h) => headerCheck.includes(h))) continue; // bỏ qua dòng tiêu đề
-
-    const [code, name, address, cccdRaw, phone, disbursedDate, dueDate, interestPaidUntil, principal, balance, interestRate] = cells.map((c) => c.trim());
-    const cccd = (cccdRaw || '').replace(/\s/g, '');
-    if (!cccd || !/^\d{9,12}$/.test(cccd)) { parseErrors.push(`Bỏ qua dòng (CCCD không hợp lệ): ${line.slice(0, 40)}...`); continue; }
-
-    const disbursed = parseVNDate(disbursedDate) || new Date().toISOString().slice(0, 10);
-    rows.push({
-      cccd, name, address, phone, code: code || null,
-      principal: principal ? parseVNNumber(principal) : null,
-      disbursedDate: disbursed,
-      dueDate: dueDate ? parseVNDate(dueDate) : null,
-      interestRate: interestRate ? parseVNNumber(interestRate) : null,
-      balance: parseVNNumber(balance),
-      interestPaidUntil: parseVNDate(interestPaidUntil) || null,
-    });
-  }
-
-  const session = getSession();
-  const res = await callImportDataFunction(session?.sbToken, { rows, fullSync });
-  if (!res.ok) throw new Error(res.reason || 'Không nhập được dữ liệu.');
-
-  // Tải lại toàn bộ khách hàng/hợp đồng từ Supabase để đồng bộ đúng dữ liệu
-  // thật sau khi nhập — chắc chắn đúng hơn tự tính lại ở trình duyệt vì mọi
-  // quyết định thêm/sửa/xóa đều đã xảy ra ở server.
-  await loadAdminSessionData(session.sbToken);
-
-  return {
-    newProfiles: res.newProfiles || 0, existingCustomers: res.existingCustomers || 0, contracts: res.contracts || 0,
-    deletedContracts: res.deletedContracts || 0, deletedCustomers: res.deletedCustomers || 0,
-    skipped: skipped + (res.skipped || 0), errors: [...parseErrors, ...(res.errors || [])],
-    newAccounts: res.newAccounts || [],
-  };
-}
-
-// ------------------------------------------------------------
-// Quản trị viên
-// ------------------------------------------------------------
-/**
- * Đăng nhập quản trị viên/nhân viên — ĐÃ CHUYỂN SANG SUPABASE THẬT, cùng cơ
- * chế với loginCustomer() (xem ghi chú ở đó). Đúng mật khẩu thì tải toàn bộ
- * admins/customers/contracts từ Supabase vào state — RLS tự lọc đúng phạm
- * vi (nhân viên chỉ thấy khách trong Thôn/Xóm được gán, quản trị toàn
- * quyền thấy hết), y hệt logic phân quyền client-side cũ, chỉ khác là giờ
- * chặn được thật ở tầng server chứ không chỉ ẩn trên giao diện.
- */
-export async function loginAdmin(username, password) {
-  const res = await callLoginFunction({ role: 'admin', identifier: username, password });
-  if (!res.ok) return { ok: false, reason: res.reason };
-  await loadAdminSessionData(res.token);
-  return { ok: true, adminId: res.id, sbToken: res.token };
-}
-
-async function loadAdminSessionData(token) {
-  const sb = getSupabaseClient(token);
-  const [{ data: adminRows }, { data: customerRows }, { data: contractRows }, { data: requestRows }] = await Promise.all([
-    sb.from('admins').select('*'),
-    sb.from('customers').select('*'),
-    sb.from('contracts').select('*'),
-    sb.from('requests').select('*'),
-  ]);
-  state.admins = (adminRows || []).map(mapAdminRow);
-  state.customers = (customerRows || []).map(mapCustomerRow);
-  state.contracts = (contractRows || []).map(mapContractRow);
-  state.requests = (requestRows || []).map(mapRequestRow);
-}
-
-function mapAdminRow(row) {
-  return {
-    id: row.id, username: row.username, name: row.name, role: row.role,
-    allowedThon: row.allowed_thon || [], allowedXom: row.allowed_xom || [],
-    salt: row.salt, hash: row.hash, createdAt: row.created_at,
-  };
-}
-export function getAdmin(id) { return state.admins.find((a) => a.id === id); }
-export function listAdmins() { return state.admins; }
-export function isSuperAdmin(id) { return getAdmin(id)?.role === 'super'; }
-
-/**
- * Tạo tài khoản quản trị (role 'super' toàn quyền hoặc 'staff' chỉ xem) —
- * có tên đăng nhập + mật khẩu (tự sinh nếu không nhập) + phân quyền xem ngay
- * trong lúc tạo (chỉ áp dụng cho 'staff'). Phân quyền 2 cấp: allowedThon
- * (xem trọn cả Thôn, gồm mọi Xóm trong đó) và allowedXom (chỉ xem riêng 1
- * vài Xóm cụ thể dù Thôn chứa nó không được cấp trọn).
- */
-/**
- * Tạo tài khoản quản trị viên/nhân viên — ĐÃ CHUYỂN SANG SUPABASE THẬT,
- * cùng cơ chế với activateCustomerAccount() ở trên (qua Edge Function
- * "create-account", chỉ admin role='super' gọi được).
- */
-export async function addStaffAdmin({ username, name, password, role, allowedThon, allowedXom }) {
-  const session = getSession();
-  const res = await callCreateAccountFunction(session?.sbToken, {
-    type: 'staff', username, name, password, role, allowedThon, allowedXom,
-  });
-  if (!res.ok) throw new Error(res.reason || 'Không tạo được tài khoản.');
-  const sb = getSupabaseClient(session.sbToken);
-  const { data: row } = await sb.from('admins').select('*').eq('id', res.id).maybeSingle();
-  const staff = row ? mapAdminRow(row) : { id: res.id, username };
-  const idx = state.admins.findIndex((a) => a.id === staff.id);
-  if (idx >= 0) state.admins[idx] = staff; else state.admins.push(staff);
-  notify();
-  return { staff, tempPassword: res.tempPassword };
-}
-/** ĐÃ CHUYỂN SANG SUPABASE THẬT qua Edge Function "create-account". */
-export async function updateStaffPermissions(id, allowedThon, allowedXom) {
-  const a = getAdmin(id);
-  if (!a || a.role !== 'staff') return;
-  const session = getSession();
-  const res = await callCreateAccountFunction(session?.sbToken, { type: 'update-staff-permissions', staffId: id, allowedThon, allowedXom });
-  if (!res.ok) throw new Error(res.reason || 'Không cập nhật được quyền xem.');
-  a.allowedThon = Array.isArray(allowedThon) ? allowedThon : [];
-  a.allowedXom = Array.isArray(allowedXom) ? allowedXom : [];
-  notify();
-}
-/** Cấp lại mật khẩu cho quản trị viên/nhân viên — có thể tự nhập mật khẩu cụ thể, để trống thì tự sinh ngẫu nhiên. */
-/** ĐÃ CHUYỂN SANG SUPABASE THẬT qua Edge Function "create-account". */
-export async function resetStaffPassword(id, customPassword) {
-  const a = getAdmin(id);
-  if (!a) throw new Error('Không tìm thấy tài khoản');
-  const session = getSession();
-  const res = await callCreateAccountFunction(session?.sbToken, { type: 'reset-staff-password', staffId: id, password: customPassword });
-  if (!res.ok) throw new Error(res.reason || 'Không cấp lại được mật khẩu.');
-  notify();
-  return res.tempPassword;
-}
-/** Kiểm tra mật khẩu hiện tại của quản trị viên/nhân viên — dùng cho màn tự đổi mật khẩu. */
-/** ĐÃ CHUYỂN SANG SUPABASE THẬT qua Edge Function (chỉ tự xác minh chính mình). */
-export async function verifyAdminPassword(id, password) {
-  const session = getSession();
-  if (!session || session.id !== id) return false;
-  const res = await callCreateAccountFunction(session.sbToken, { type: 'verify-own-password', password });
-  return !!(res.ok && res.valid);
-}
-
-/** Tự đổi mật khẩu (Quản trị viên/nhân viên tự đặt mật khẩu mới cho chính mình) — ĐÃ CHUYỂN SANG SUPABASE THẬT. */
-export async function setStaffPassword(id, newPassword) {
-  const session = getSession();
-  const res = await callCreateAccountFunction(session?.sbToken, { type: 'set-own-password', newPassword });
-  if (!res.ok) throw new Error(res.reason || 'Không đổi được mật khẩu.');
-  notify();
-}
-/** ĐÃ CHUYỂN SANG SUPABASE THẬT qua Edge Function "create-account" (server tự kiểm tra giữ lại ít nhất 1 super admin). */
-export async function deleteStaffAdmin(id) {
-  const a = getAdmin(id);
-  if (!a) return;
-  const session = getSession();
-  const res = await callCreateAccountFunction(session?.sbToken, { type: 'delete-staff', staffId: id });
-  if (!res.ok) throw new Error(res.reason || 'Không xóa được tài khoản.');
-  state.admins = state.admins.filter((x) => x.id !== id);
-  notify();
-}
-/** Tài khoản khách hàng có đang bị tạm khóa hay không (do nhập sai mật khẩu nhiều lần). */
-export function isCustomerLocked(c) { return !!(c.lockedUntil && c.lockedUntil > Date.now()); }
-
-// ------------------------------------------------------------
-// Yêu cầu tư vấn / mở khoản vay
-// ------------------------------------------------------------
-export function listRequests(filters = {}) {
-  let list = [...state.requests];
-  if (filters.customerId) list = list.filter((r) => r.customerId === filters.customerId);
-  if (filters.status && filters.status !== 'all') list = list.filter((r) => r.status === filters.status);
-  return list.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-}
-/**
- * Khách hàng gửi yêu cầu tư vấn/vay mới — ĐÃ CHUYỂN SANG SUPABASE THẬT, ghi
- * thẳng qua RLS (không cần Edge Function riêng vì đây không phải hành động
- * nhạy cảm — RLS đã chặn khách chỉ tạo được yêu cầu cho ĐÚNG chính mình,
- * xem policy "customer creates own request" trong docs/supabase-migration.md).
- */
-export async function createRequest({ customerId, type, amount, purpose, termMonths, note }) {
+export function listRecurring() { return state.recurring.filter((r) => r.active); }
+export async function addRecurring({ type, amount, categoryId, note, dayOfMonth }) {
   const session = getSession();
   const sb = getSupabaseClient(session?.sbToken);
   const row = {
-    id: genId('yc'), customer_id: customerId, type, amount: Number(amount) || 0, purpose: purpose || '',
-    term_months: Number(termMonths) || null, note: note || '', status: 'moi',
+    id: genId('rec'), type, amount: Number(amount) || 0, category_id: categoryId || null,
+    note: note || '', day_of_month: Number(dayOfMonth) || 1, active: true, user_id: session.id,
   };
-  const { error } = await sb.from('requests').insert(row);
-  if (error) throw new Error('Không gửi được yêu cầu, thử lại sau.');
-  const req = mapRequestRow({ ...row, created_at: new Date().toISOString() });
-  state.requests.push(req);
+  const { error } = await sb.from('recurring_transactions').insert(row);
+  if (error) throw new Error('Không lưu được khoản định kỳ, thử lại sau.');
+  state.recurring.push(mapRecurringRow(row));
   notify();
-  return req;
 }
-/** Admin cập nhật trạng thái yêu cầu — ĐÃ CHUYỂN SANG SUPABASE THẬT qua RLS. */
-export async function updateRequestStatus(id, status) {
+export async function updateRecurring(id, { type, amount, categoryId, note, dayOfMonth, active }) {
   const session = getSession();
   const sb = getSupabaseClient(session?.sbToken);
-  const { error } = await sb.from('requests').update({ status }).eq('id', id);
-  if (error) throw new Error('Không cập nhật được trạng thái, thử lại sau.');
-  const r = state.requests.find((x) => x.id === id);
-  if (r) r.status = status;
+  const patch = { type, amount: Number(amount) || 0, category_id: categoryId || null, note: note || '', day_of_month: Number(dayOfMonth) || 1, active: active !== false };
+  const { error } = await sb.from('recurring_transactions').update(patch).eq('id', id);
+  if (error) throw new Error('Không cập nhật được, thử lại sau.');
+  const r = state.recurring.find((x) => x.id === id);
+  if (r) Object.assign(r, { type, amount: patch.amount, categoryId: patch.category_id, note: patch.note, dayOfMonth: patch.day_of_month, active: patch.active });
   notify();
 }
-function mapRequestRow(row) {
-  return {
-    id: row.id, customerId: row.customer_id, type: row.type, amount: row.amount,
-    purpose: row.purpose || '', termMonths: row.term_months, note: row.note || '',
-    status: row.status, createdAt: row.created_at,
-  };
+export async function deleteRecurring(id) {
+  const session = getSession();
+  const sb = getSupabaseClient(session?.sbToken);
+  const { error } = await sb.from('recurring_transactions').delete().eq('id', id);
+  if (error) throw new Error('Không xóa được, thử lại sau.');
+  state.recurring = state.recurring.filter((r) => r.id !== id);
+  notify();
+}
+/** Các khoản định kỳ đã tới/qua ngày trong THÁNG HIỆN TẠI mà chưa có giao dịch nào ghi từ nó -> cần nhắc. */
+export function pendingRecurringReminders(asOf = new Date()) {
+  const year = asOf.getFullYear(), month = asOf.getMonth() + 1;
+  const { from, to } = monthRange(year, month);
+  const loggedRecurringIds = new Set(state.transactions.filter((t) => t.date >= from && t.date <= to && t.recurringId).map((t) => t.recurringId));
+  return listRecurring().filter((r) => asOf.getDate() >= r.dayOfMonth && !loggedRecurringIds.has(r.id));
+}
+/** Xác nhận 1 khoản định kỳ -> tự tạo giao dịch tương ứng cho tháng hiện tại (có thể sửa số tiền lúc xác nhận nếu tháng này khác thường). */
+export async function confirmRecurring(recurringId, { amount, date } = {}) {
+  const r = state.recurring.find((x) => x.id === recurringId);
+  if (!r) throw new Error('Không tìm thấy khoản định kỳ.');
+  await addTransaction({
+    type: r.type, amount: amount != null ? amount : r.amount, categoryId: r.categoryId,
+    note: r.note || 'Định kỳ', date: date || new Date().toISOString().slice(0, 10), recurringId: r.id,
+  });
+}
+
+// ------------------------------------------------------------
+// Mục tiêu tiết kiệm
+// ------------------------------------------------------------
+export function listSavingsGoals() { return state.savingsGoals; }
+export async function addSavingsGoal({ name, targetAmount, deadline, note }) {
+  const session = getSession();
+  const sb = getSupabaseClient(session?.sbToken);
+  const row = { id: genId('goal'), name, target_amount: Number(targetAmount) || 0, current_amount: 0, deadline: deadline || null, note: note || '', user_id: session.id };
+  const { error } = await sb.from('savings_goals').insert(row);
+  if (error) throw new Error('Không tạo được mục tiêu, thử lại sau.');
+  state.savingsGoals.push(mapSavingsGoalRow(row));
+  notify();
+}
+export async function updateSavingsGoal(id, { name, targetAmount, deadline, note }) {
+  const session = getSession();
+  const sb = getSupabaseClient(session?.sbToken);
+  const patch = { name, target_amount: Number(targetAmount) || 0, deadline: deadline || null, note: note || '' };
+  const { error } = await sb.from('savings_goals').update(patch).eq('id', id);
+  if (error) throw new Error('Không cập nhật được, thử lại sau.');
+  const g = state.savingsGoals.find((x) => x.id === id);
+  if (g) Object.assign(g, { name, targetAmount: patch.target_amount, deadline: patch.deadline, note: patch.note });
+  notify();
+}
+/** Góp thêm (hoặc rút bớt nếu truyền số âm) vào 1 mục tiêu tiết kiệm. */
+export async function contributeSavingsGoal(id, amount) {
+  const g = state.savingsGoals.find((x) => x.id === id);
+  if (!g) throw new Error('Không tìm thấy mục tiêu.');
+  const session = getSession();
+  const sb = getSupabaseClient(session?.sbToken);
+  const newAmount = Math.max(0, g.currentAmount + Number(amount));
+  const { error } = await sb.from('savings_goals').update({ current_amount: newAmount }).eq('id', id);
+  if (error) throw new Error('Không cập nhật được, thử lại sau.');
+  g.currentAmount = newAmount;
+  notify();
+}
+export async function deleteSavingsGoal(id) {
+  const session = getSession();
+  const sb = getSupabaseClient(session?.sbToken);
+  const { error } = await sb.from('savings_goals').delete().eq('id', id);
+  if (error) throw new Error('Không xóa được, thử lại sau.');
+  state.savingsGoals = state.savingsGoals.filter((g) => g.id !== id);
+  notify();
 }
 
 // ------------------------------------------------------------
@@ -821,95 +490,8 @@ function mapRequestRow(row) {
 // ------------------------------------------------------------
 export function getSession() { return state.session; }
 export function setSession(session) { state.session = session; notify(); }
-export function logout() { state.session = null; notify(); }
-
-// ============================================================
-// Sinh dữ liệu DEMO — toàn bộ tên/CCCD/số liệu dưới đây là GIẢ,
-// không liên quan đến bất kỳ khách hàng thật nào.
-// ============================================================
-async function seedDemoData() {
-  const rng = mulberry32(7717);
-  const org = {
-    name: 'Quỹ Tín Dụng Nhân Dân Bình Nguyên',
-    shortName: 'QTD Bình Nguyên',
-    hotline: '1900 000 000',
-    address: '01 Đường Mẫu, Phường Trung Tâm, Tỉnh Demo',
-    bannerEnabled: true,
-    bannerTitle: 'Ưu đãi lãi suất vay tiêu dùng',
-    bannerText: 'Liên hệ quầy giao dịch hoặc gửi yêu cầu tư vấn ngay trên ứng dụng để được hỗ trợ.',
-    // Thông tin nhận thanh toán — HIỂN THỊ CHO KHÁCH HÀNG THẬT, cần admin xác minh lại tại Cài đặt.
-    bankBin: '970446', // Ngân hàng Hợp tác xã Việt Nam (Co-op Bank) — kiểm tra lại tại vietqr.io trước khi dùng thật
-    bankName: 'Ngân hàng Hợp tác xã Việt Nam (Co-op Bank)',
-    bankAccountNo: '5200000000825012',
-    bankAccountName: 'QUY TIN DUNG NHAN DAN BINH NGUYEN',
-  };
-
-  const adminCred = await makeCredential('Admin@123');
-  const staffCred = await makeCredential('Staff@123');
-  const admins = [
-    { id: 'admin_1', username: 'admin', name: 'Quản trị viên', role: 'super', allowedThon: [], allowedXom: [], ...adminCred },
-    { id: 'staff_1', username: 'nhanvien1', name: 'Nhân viên địa bàn Thôn 1', role: 'staff', allowedThon: ['Thôn 1'], allowedXom: [], ...staffCred, createdAt: new Date().toISOString() },
-  ];
-
-  const demoDefs = [
-    ['079300012345', 'Trần Văn Mẫu', '0901 000 001', 'Xóm A, Thôn 1, Tỉnh Demo'],
-    ['079300012346', 'Nguyễn Thị Mẫu', '0901 000 002', 'Xóm B, Thôn 1, Tỉnh Demo'],
-    ['079300012347', 'Lê Văn Ví Dụ', '0901 000 003', 'Xóm A, Thôn 2, Tỉnh Demo'],
-    ['079300012348', 'Phạm Thị Ví Dụ', '0901 000 004', 'Xóm B, Thôn 2, Tỉnh Demo'],
-  ];
-  const customers = [];
-  for (const [cccd, name, phone, address] of demoDefs) {
-    const temp = 'Demo@123';
-    const cred = await makeCredential(temp);
-    customers.push({
-      id: genId('cust'), cccd, name, phone, address, ...parseAddress(address),
-      ...cred, mustChangePassword: true, tempPassword: temp,
-      failedAttempts: 0, lockedUntil: null, createdAt: new Date().toISOString(),
-    });
-  }
-
-  const contracts = [];
-  const now = new Date();
-  customers.forEach((c, i) => {
-    const nContracts = i === 0 ? 2 : 1; // khách đầu tiên có nhiều hợp đồng để minh họa
-    for (let k = 0; k < nContracts; k++) {
-      const principal = randInt(rng, 20, 150) * 1_000_000;
-      const disbursed = addDays(now, -randInt(rng, 30, 400));
-      const due = addDays(disbursed, randInt(rng, 6, 24) * 30);
-      // Trạng thái phải khớp với ngày đến hạn để dữ liệu demo hợp lý
-      const isPastDue = due < now;
-      const status = isPastDue
-        ? (rng() < 0.65 ? 'qua_han' : 'da_tat_toan')
-        : (rng() < 0.85 ? 'dang_vay' : 'da_tat_toan');
-      contracts.push({
-        id: genId('hd'), customerId: c.id,
-        code: `HD${2026}${String(1000 + contracts.length)}`,
-        principal, disbursedDate: disbursed.toISOString().slice(0, 10),
-        dueDate: due.toISOString().slice(0, 10),
-        interestRate: [8.5, 9.2, 10.0][randInt(rng, 0, 2)],
-        balance: status === 'da_tat_toan' ? 0 : Math.round((principal * (0.3 + rng() * 0.7)) / 100000) * 100000,
-        status,
-        // Giả lập lần đóng lãi gần nhất: cách đây một số ngày (0-45 ngày), không vượt quá ngày giải ngân
-        interestPaidUntil: (() => {
-          const lastPaid = addDays(now, -randInt(rng, 0, 45));
-          return (lastPaid < disbursed ? disbursed : lastPaid).toISOString().slice(0, 10);
-        })(),
-      });
-    }
-  });
-
-  const requests = [
-    {
-      id: genId('yc'), customerId: customers[1].id, type: 'vay_moi', amount: 50_000_000,
-      purpose: 'Bổ sung vốn kinh doanh', termMonths: 12, note: '',
-      status: 'moi', createdAt: addDays(now, -1).toISOString(),
-    },
-    {
-      id: genId('yc'), customerId: customers[2].id, type: 'tu_van', amount: 0,
-      purpose: 'Hỏi về lãi suất tất toán trước hạn', termMonths: null, note: 'Muốn tất toán hợp đồng HD20261000',
-      status: 'dang_xu_ly', createdAt: addDays(now, -3).toISOString(),
-    },
-  ];
-
-  state = { org, admins, customers, contracts, requests, session: null };
+export function logout() {
+  state.session = null;
+  state.users = []; state.categories = []; state.transactions = []; state.budgets = []; state.recurring = []; state.savingsGoals = [];
+  notify();
 }

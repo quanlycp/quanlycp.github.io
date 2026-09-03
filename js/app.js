@@ -5,34 +5,29 @@ import { renderLogin } from './views/login.js';
 import { renderChangePassword } from './views/changePassword.js';
 
 import * as Dashboard from './views/dashboard.js';
-import * as ContractDetail from './views/contractDetail.js';
-import * as RequestForm from './views/requestForm.js';
-import * as Account from './views/account.js';
+import * as Transactions from './views/transactions.js';
+import * as Budgets from './views/budgets.js';
+import * as Reports from './views/reports.js';
+import * as Recurring from './views/recurring.js';
+import * as Savings from './views/savings.js';
+import * as Users from './views/users.js';
+import * as Settings from './views/settings.js';
 import * as ChangePasswordSelf from './views/changePasswordSelf.js';
-import * as AdminOverview from './views/admin/overview.js';
-import * as AdminCustomers from './views/admin/customers.js';
-import * as AdminRequests from './views/admin/requests.js';
-import * as AdminSettings from './views/admin/settings.js';
-import * as AdminStaff from './views/admin/staff.js';
 
-const customerRoutes = [
+const ROUTES = [
   { re: /^#\/$/, view: Dashboard },
-  { re: /^#\/hop-dong\/([^/]+)$/, view: ContractDetail, params: ['id'] },
-  { re: /^#\/yeu-cau-tu-van$/, view: RequestForm },
-  { re: /^#\/tai-khoan$/, view: Account },
-  { re: /^#\/doi-mat-khau$/, view: ChangePasswordSelf },
-];
-const adminRoutes = [
-  { re: /^#\/admin$/, view: AdminOverview },
-  { re: /^#\/admin\/khach-hang$/, view: AdminCustomers },
-  { re: /^#\/admin\/yeu-cau$/, view: AdminRequests },
-  { re: /^#\/admin\/cai-dat$/, view: AdminSettings, superOnly: true },
-  { re: /^#\/admin\/nhan-vien$/, view: AdminStaff, superOnly: true },
+  { re: /^#\/giao-dich$/, view: Transactions },
+  { re: /^#\/ngan-sach$/, view: Budgets },
+  { re: /^#\/bao-cao$/, view: Reports },
+  { re: /^#\/dinh-ky$/, view: Recurring },
+  { re: /^#\/tiet-kiem$/, view: Savings },
+  { re: /^#\/nguoi-dung$/, view: Users, ownerOnly: true },
+  { re: /^#\/cai-dat$/, view: Settings, ownerOnly: true },
   { re: /^#\/doi-mat-khau$/, view: ChangePasswordSelf },
 ];
 
 let root;
-let shellKey = null;
+let shellBuilt = false;
 
 function splitHash() {
   const raw = location.hash || '#/';
@@ -40,14 +35,10 @@ function splitHash() {
   return { path: path || '#/', query: new URLSearchParams(qs || '') };
 }
 
-function matchRoute(path, routes) {
-  for (const r of routes) {
+function matchRoute(path) {
+  for (const r of ROUTES) {
     const m = path.match(r.re);
-    if (m) {
-      const params = {};
-      (r.params || []).forEach((name, i) => { params[name] = decodeURIComponent(m[i + 1]); });
-      return { view: r.view, params, superOnly: !!r.superOnly };
-    }
+    if (m) return { view: r.view, ownerOnly: !!r.ownerOnly };
   }
   return null;
 }
@@ -58,38 +49,30 @@ function renderApp({ scrollTop = true } = {}) {
   const session = S.getSession();
 
   if (!session) {
-    shellKey = null;
+    shellBuilt = false;
     renderLogin(root, () => renderApp());
     return;
   }
 
-  if (session.role === 'customer') {
-    const customer = S.getCustomer(session.id);
-    if (!customer) { S.logout(); renderApp(); return; }
-    if (customer.mustChangePassword) {
-      shellKey = null;
-      renderChangePassword(root, customer.id, () => renderApp(), { forced: true });
-      return;
-    }
+  if (session.mustChangePassword) {
+    shellBuilt = false;
+    renderChangePassword(root, session.id, () => renderApp(), { forced: true });
+    return;
   }
 
-  const isSuper = session.role === 'admin' ? S.isSuperAdmin(session.id) : false;
+  const isOwner = session.role === 'owner';
   const { path, query } = splitHash();
-  const routes = session.role === 'admin' ? adminRoutes : customerRoutes;
-  const defaultPath = session.role === 'admin' ? '#/admin' : '#/';
-  let match = matchRoute(path, routes);
-  if (!match || (match.superOnly && !isSuper)) {
-    // Trang không hợp lệ / không đủ quyền với vai trò hiện tại -> về trang mặc định
-    if (location.hash !== defaultPath) { location.hash = defaultPath; return; }
-    match = matchRoute(defaultPath, routes);
+  let match = matchRoute(path);
+  if (!match || (match.ownerOnly && !isOwner)) {
+    if (location.hash !== '#/') { location.hash = '#/'; return; }
+    match = matchRoute('#/');
   }
 
-  const newShellKey = session.role + ':' + isSuper;
-  if (shellKey !== newShellKey) {
-    buildShell(root, session.role, isSuper);
-    shellKey = newShellKey;
+  if (!shellBuilt) {
+    buildShell(root, isOwner);
+    shellBuilt = true;
   }
-  document.getElementById('brand-name').textContent = S.getOrg().shortName;
+  document.getElementById('brand-name').textContent = S.getSettings().householdName;
 
   const headerEl = document.getElementById('app-header');
   const filterEl = document.getElementById('filter-slot');
@@ -98,8 +81,8 @@ function renderApp({ scrollTop = true } = {}) {
   filterEl.innerHTML = '';
   if (scrollTop) window.scrollTo(0, 0);
 
-  if (match.view.renderHeader) match.view.renderHeader(headerEl, match.params);
-  match.view.render(contentEl, filterEl, match.params, query);
+  if (match.view.renderHeader) match.view.renderHeader(headerEl);
+  match.view.render(contentEl, filterEl, query);
   updateActiveNav(path);
 }
 

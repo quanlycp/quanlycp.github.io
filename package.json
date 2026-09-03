@@ -1,8 +1,8 @@
 {
-  "name": "qtd-demo-portal",
+  "name": "so-chi-tieu",
   "version": "0.1.0",
   "private": true,
-  "description": "BẢN DEMO — cổng khách hàng quỹ tín dụng (tra cứu khoản vay, yêu cầu tư vấn) + trang quản trị. Web app thuần HTML/CSS/JS, không cần build. Đã kết nối Supabase (database + Edge Function thật, xem docs/supabase-migration.md) — chưa có OTP thật, chưa rà soát bảo mật/pháp lý độc lập nên chưa dùng để vận hành thật.",
+  "description": "Sổ Chi Tiêu — quản lý chi tiêu & kế hoạch ngân sách hàng tháng cho gia đình/cá nhân. Web app thuần HTML/CSS/JS, không cần build. Kết nối Supabase (database + Edge Function thật, xem docs/expense-app-setup.md).",
   "scripts": {
     "start": "node server.js"
   }

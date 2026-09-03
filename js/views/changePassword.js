@@ -2,7 +2,7 @@ import * as S from '../state.js';
 import { icon } from '../icons.js';
 import { toast } from '../components/toast.js';
 
-export function renderChangePassword(root, customerId, onDone, opts = {}) {
+export function renderChangePassword(root, userId, onDone, opts = {}) {
   root.innerHTML = `
     <div class="login-wrap">
       <div class="login-card">
@@ -34,8 +34,7 @@ export function renderChangePassword(root, customerId, onDone, opts = {}) {
     const errEl = root.querySelector('#pw-error');
     if (pw1 !== pw2) { errEl.textContent = 'Mật khẩu nhập lại không khớp.'; errEl.style.display = 'block'; return; }
     try {
-      await S.setCustomerPassword(customerId, pw1, { mustChangePassword: false });
-      S.setSession({ ...S.getSession(), mustChangePassword: false });
+      await S.setOwnPassword(pw1, { mustChangePassword: false });
       toast('Đã đổi mật khẩu thành công', 'success');
       onDone();
     } catch (err) {
