@@ -5,19 +5,15 @@
 // ở Row Level Security + Edge Function, không phải ở việc giấu 2 giá trị
 // này. KHÔNG bao giờ đặt service_role key ở đây hay bất cứ file nào chạy
 // trong trình duyệt.
-//
-// *** CẦN ĐIỀN LẠI 3 GIÁ TRỊ DƯỚI ĐÂY sau khi tạo project Supabase mới cho
-// app "Sổ Chi Tiêu" (xem docs/expense-app-setup.md mục 1 và 4) — 3 giá trị
-// đang để rỗng/placeholder vì đây là project MỚI, chưa từng tạo. ***
 import { createClient } from '@supabase/supabase-js';
 
-export const SUPABASE_URL = 'https://REPLACE-ME.supabase.co';
-export const SUPABASE_ANON_KEY = 'REPLACE-ME-anon-public-key';
+export const SUPABASE_URL = 'https://iswfooouxpzcijynvalv.supabase.co';
+export const SUPABASE_ANON_KEY = 'eyJhbGci••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••';
 
 // URL thật của Edge Function DUY NHẤT (gộp login + tự đổi mật khẩu + quản lý
 // thành viên vào chung 1 function cho đỡ phải deploy nhiều chỗ) — LƯU Ý tên
 // hiển thị trên Dashboard có thể khác đường dẫn thật tùy cách tạo function.
-export const API_FN_URL = 'https://REPLACE-ME.supabase.co/functions/v1/REPLACE-ME';
+export const API_FN_URL = 'https://iswfooouxpzcijynvalv.supabase.co/functions/v1/create-account';
 
 /**
  * Tạo 1 Supabase client — nếu có JWT riêng (do Edge Function cấp sau khi
