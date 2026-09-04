@@ -99,6 +99,47 @@ create table savings_goals (
   created_at timestamptz default now()
 );
 
+-- Kế hoạch chi tiêu: khoản thu/chi DỰ ĐỊNH (vd "cuối tháng mua sắm 2 triệu")
+-- — chỉ để nhắc/theo dõi, CHƯA tính vào thu/chi thật cho tới khi tick "Hoàn
+-- thành" (lúc đó mới tự tạo 1 dòng trong transactions, xem transaction_id).
+create table plans (
+  id text primary key,
+  type text not null check (type in ('expense','income')),
+  amount numeric not null,
+  category_id text references categories(id) on delete set null,
+  title text not null,
+  due_date date,
+  status text not null default 'pending' check (status in ('pending','done')),
+  transaction_id text references transactions(id) on delete set null,
+  user_id text references users(id) on delete set null,
+  created_at timestamptz default now()
+);
+
+-- Quản lý nợ theo TỪNG CHỦ NỢ (vd "Tạp hóa A", "Anh Ba") — mỗi chủ nợ có 1
+-- sổ riêng gồm nhiều dòng: "ghi nợ" (mua gì, ngày nào, nợ bao nhiêu) và "trả
+-- nợ" (ngày nào, trả bao nhiêu). Còn nợ = tổng ghi nợ - tổng trả nợ, tính
+-- ngay khi đọc dữ liệu (không lưu cột riêng để khỏi lệch). Ghi nợ KHÔNG tạo
+-- giao dịch (chưa mất tiền thật) — chỉ "trả nợ" mới tự tạo 1 giao dịch chi
+-- tiêu thật (xem debt_entries.transaction_id) để không lệch tổng chi tháng.
+create table creditors (
+  id text primary key,
+  name text not null, -- tên chủ nợ/khách hàng, VD "Tạp hóa A"
+  note text,
+  user_id text references users(id) on delete set null,
+  created_at timestamptz default now()
+);
+create table debt_entries (
+  id text primary key,
+  creditor_id text not null references creditors(id) on delete cascade,
+  kind text not null check (kind in ('charge','payment')), -- charge = ghi nợ thêm, payment = trả nợ
+  amount numeric not null,
+  entry_date date not null default current_date,
+  description text, -- charge: mua gì; payment: ghi chú (không bắt buộc)
+  transaction_id text references transactions(id) on delete set null,
+  user_id text references users(id) on delete set null,
+  created_at timestamptz default now()
+);
+
 create table app_settings (
   id text primary key default 'main',
   household_name text not null default 'Sổ chi tiêu của tôi',
@@ -110,6 +151,11 @@ create index on transactions (txn_date);
 create index on transactions (category_id);
 create index on transactions (user_id);
 create index on budgets (year, month);
+create index on plans (status);
+create index on plans (due_date);
+create index on creditors (user_id);
+create index on debt_entries (creditor_id);
+create index on debt_entries (entry_date);
 ```
 
 ## 3. Row Level Security + quyền bảng
@@ -121,6 +167,9 @@ alter table recurring_transactions enable row level security;
 alter table transactions enable row level security;
 alter table budgets enable row level security;
 alter table savings_goals enable row level security;
+alter table plans enable row level security;
+alter table creditors enable row level security;
+alter table debt_entries enable row level security;
 alter table app_settings enable row level security;
 
 grant usage on schema public to anon, authenticated, service_role;
@@ -130,7 +179,7 @@ grant usage on schema public to anon, authenticated, service_role;
 grant select, insert, update, delete on users to service_role;
 grant select on user_profiles to anon, authenticated;
 
-grant select, insert, update, delete on categories, recurring_transactions, transactions, budgets, savings_goals
+grant select, insert, update, delete on categories, recurring_transactions, transactions, budgets, savings_goals, plans, creditors, debt_entries
   to authenticated, service_role;
 grant select on app_settings to anon, authenticated;
 grant update on app_settings to authenticated, service_role;
@@ -152,6 +201,17 @@ create policy "authenticated full access budgets" on budgets
 create policy "authenticated full access savings" on savings_goals
   for all using ((auth.jwt() ->> 'app_role') in ('owner','member'))
   with check ((auth.jwt() ->> 'app_role') in ('owner','member'));
+create policy "authenticated full access plans" on plans
+  for all using ((auth.jwt() ->> 'app_role') in ('owner','member'))
+  with check ((auth.jwt() ->> 'app_role') in ('owner','member'));
+-- Quản lý nợ RIÊNG của từng người dùng (không chia sẻ như các bảng trên) —
+-- mỗi người chỉ xem/sửa được đúng chủ nợ/sổ nợ do mình tạo (kể cả owner).
+create policy "own creditors only" on creditors
+  for all using ((auth.jwt() ->> 'row_id') = user_id)
+  with check ((auth.jwt() ->> 'row_id') = user_id);
+create policy "own debt_entries only" on debt_entries
+  for all using ((auth.jwt() ->> 'row_id') = user_id)
+  with check ((auth.jwt() ->> 'row_id') = user_id);
 
 -- app_settings: ai cũng xem được (tên sổ hiện ở màn đăng nhập, chưa cần đăng
 -- nhập cũng phải thấy), chỉ owner sửa được.
@@ -190,7 +250,82 @@ select
 from (select encode(gen_random_bytes(8), 'hex') as salt) s;
 ```
 
-## 6. Việc còn lại
+## 7. Bổ sung sau: bảng "Kế hoạch chi tiêu" (nếu project đã tạo trước khi có mục này)
+
+Nếu bạn đã chạy schema ở mục 2 TRƯỚC KHI bảng `plans` được thêm vào tài liệu này, chạy bổ sung
+đúng đoạn SQL sau trong **SQL Editor** (không ảnh hưởng gì tới dữ liệu đã có):
+
+```sql
+create table plans (
+  id text primary key,
+  type text not null check (type in ('expense','income')),
+  amount numeric not null,
+  category_id text references categories(id) on delete set null,
+  title text not null,
+  due_date date,
+  status text not null default 'pending' check (status in ('pending','done')),
+  transaction_id text references transactions(id) on delete set null,
+  user_id text references users(id) on delete set null,
+  created_at timestamptz default now()
+);
+create index on plans (status);
+create index on plans (due_date);
+
+alter table plans enable row level security;
+grant select, insert, update, delete on plans to authenticated, service_role;
+create policy "authenticated full access plans" on plans
+  for all using ((auth.jwt() ->> 'app_role') in ('owner','member'))
+  with check ((auth.jwt() ->> 'app_role') in ('owner','member'));
+```
+
+Sau đó cần **deploy lại Edge Function** với code mới nhất (không đổi gì về SQL/JWT, chỉ để chắc
+chắn code khớp bản mới nhất — xem lại mục 4).
+
+## 8. Bổ sung sau: bảng "Quản lý nợ" theo chủ nợ (nếu project đã tạo trước khi có mục này)
+
+Đoạn dưới **tự xóa bảng `debts`/`debt_payments` bản cũ nếu có** (bản cũ dùng thử trước đó,
+kiểu 1-khoản-nợ-tổng, chưa theo chủ nợ) rồi tạo lại đúng theo mô hình sổ nợ theo từng chủ nợ.
+Nếu bạn CHƯA từng chạy SQL nợ nào thì lệnh `drop` chỉ đơn giản không làm gì, an toàn để chạy:
+
+```sql
+drop table if exists debt_payments;
+drop table if exists debts;
+
+create table creditors (
+  id text primary key,
+  name text not null,
+  note text,
+  user_id text references users(id) on delete set null,
+  created_at timestamptz default now()
+);
+create table debt_entries (
+  id text primary key,
+  creditor_id text not null references creditors(id) on delete cascade,
+  kind text not null check (kind in ('charge','payment')),
+  amount numeric not null,
+  entry_date date not null default current_date,
+  description text,
+  transaction_id text references transactions(id) on delete set null,
+  user_id text references users(id) on delete set null,
+  created_at timestamptz default now()
+);
+create index on creditors (user_id);
+create index on debt_entries (creditor_id);
+create index on debt_entries (entry_date);
+
+alter table creditors enable row level security;
+alter table debt_entries enable row level security;
+grant select, insert, update, delete on creditors, debt_entries to authenticated, service_role;
+-- Riêng của từng người dùng — mỗi người chỉ xem/sửa được đúng chủ nợ/sổ nợ do mình tạo (kể cả owner).
+create policy "own creditors only" on creditors
+  for all using ((auth.jwt() ->> 'row_id') = user_id)
+  with check ((auth.jwt() ->> 'row_id') = user_id);
+create policy "own debt_entries only" on debt_entries
+  for all using ((auth.jwt() ->> 'row_id') = user_id)
+  with check ((auth.jwt() ->> 'row_id') = user_id);
+```
+
+## 9. Việc còn lại
 
 - [ ] Đổi mật khẩu owner ngay sau lần đăng nhập đầu tiên (app tự bắt đổi).
 - [ ] Rà soát dữ liệu chi tiêu thật trước khi coi là "đang dùng thật".

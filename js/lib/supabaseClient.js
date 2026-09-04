@@ -5,6 +5,10 @@
 // ở Row Level Security + Edge Function, không phải ở việc giấu 2 giá trị
 // này. KHÔNG bao giờ đặt service_role key ở đây hay bất cứ file nào chạy
 // trong trình duyệt.
+//
+// *** CẦN ĐIỀN LẠI 3 GIÁ TRỊ DƯỚI ĐÂY sau khi tạo project Supabase mới cho
+// app "Sổ Chi Tiêu" (xem docs/expense-app-setup.md mục 1 và 4) — 3 giá trị
+// đang để rỗng/placeholder vì đây là project MỚI, chưa từng tạo. ***
 import { createClient } from '@supabase/supabase-js';
 
 export const SUPABASE_URL = 'https://iswfooouxpzcijynvalv.supabase.co';

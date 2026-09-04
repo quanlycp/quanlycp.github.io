@@ -16,6 +16,7 @@ const PATHS = {
   x: '<path d="m6 6 12 12M18 6 6 18"/>',
   chevronRight: '<path d="m9 6 6 6-6 6"/>',
   chevronDown: '<path d="m6 9 6 6 6-6"/>',
+  chevronUp: '<path d="m6 15 6-6 6 6"/>',
   chevronLeft: '<path d="m15 6-6 6 6 6"/>',
   arrowLeft: '<path d="M19 12H5M11 18l-6-6 6-6"/>',
   edit: '<path d="M4 20h4l10.5-10.5a2.1 2.1 0 0 0-3-3L5 17v3Z"/><path d="m14 6 4 4"/>',
@@ -61,6 +62,7 @@ const PATHS = {
   trendingUp: '<path d="M3 17 10 10l4 4 7-7"/><path d="M15 6h6v6"/>',
   trendingDown: '<path d="M3 7l7 7 4-4 7 7"/><path d="M15 18h6v-6"/>',
   target: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.2"/>',
+  creditCard: '<rect x="2.5" y="5" width="19" height="14" rx="2"/><path d="M2.5 9.5h19"/><path d="M6 15h4"/>',
 };
 
 /** Trả về chuỗi SVG icon theo tên. `extraCls` bổ sung thêm (vd: 'icon-sm', 'icon-lg'). */

@@ -9,6 +9,8 @@ import * as Transactions from './views/transactions.js';
 import * as Budgets from './views/budgets.js';
 import * as Reports from './views/reports.js';
 import * as Recurring from './views/recurring.js';
+import * as Plans from './views/plans.js';
+import * as Debts from './views/debts.js';
 import * as Savings from './views/savings.js';
 import * as Users from './views/users.js';
 import * as Settings from './views/settings.js';
@@ -17,9 +19,11 @@ import * as ChangePasswordSelf from './views/changePasswordSelf.js';
 const ROUTES = [
   { re: /^#\/$/, view: Dashboard },
   { re: /^#\/giao-dich$/, view: Transactions },
-  { re: /^#\/ngan-sach$/, view: Budgets },
+  { re: /^#\/danh-muc$/, view: Budgets },
   { re: /^#\/bao-cao$/, view: Reports },
   { re: /^#\/dinh-ky$/, view: Recurring },
+  { re: /^#\/ke-hoach$/, view: Plans },
+  { re: /^#\/no$/, view: Debts },
   { re: /^#\/tiet-kiem$/, view: Savings },
   { re: /^#\/nguoi-dung$/, view: Users, ownerOnly: true },
   { re: /^#\/cai-dat$/, view: Settings, ownerOnly: true },
@@ -91,9 +95,23 @@ window.addEventListener('qtd:logout', () => { closeAllModals(); S.logout(); loca
 
 window.addEventListener('DOMContentLoaded', async () => {
   root = document.getElementById('root');
+  // Vẽ ngay bằng dữ liệu cache cũ (localStorage, không chờ mạng) cho đỡ phải
+  // nhìn "Đang tải ứng dụng..." lâu — S.refresh() ở dưới tải dữ liệu mới nhất
+  // ở nền, xong tự notify() để vẽ lại (xem S.subscribe bên dưới).
   await S.init();
   renderApp();
+  S.refresh();
 });
+
+// Đăng ký service worker — Chrome/Android chỉ cho "Thêm vào màn hình chính"
+// chạy KHÔNG có thanh địa chỉ (như 1 app riêng) khi trang có service worker
+// hợp lệ; thiếu nó, "Thêm vào màn hình chính" chỉ tạo 1 shortcut mở trong
+// Chrome bình thường — đúng hiện tượng thấy thanh địa chỉ như đang mở Chrome.
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('service-worker.js').catch((e) => console.warn('Không đăng ký được service worker.', e));
+  });
+}
 
 // Mọi thay đổi dữ liệu (xóa/tạo/sửa...) đều gọi notify() và kích hoạt render
 // lại ở đây — nhưng đây KHÔNG phải là chuyển trang, nên không cuộn lên đầu,
