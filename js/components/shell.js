@@ -11,7 +11,7 @@ export const NAV = [
   { path: '#/ke-hoach', label: 'Kế hoạch', shortLabel: 'Kế hoạch', icon: 'calendar' },
   { path: '#/danh-muc', label: 'Danh mục', shortLabel: 'Danh mục', icon: 'tag' },
   { path: '#/dinh-ky', label: 'Định kỳ', shortLabel: 'Định kỳ', icon: 'refresh' },
-  { path: '#/no', label: 'Quản lý nợ', shortLabel: 'Nợ', icon: 'creditCard' },
+  { path: '#/no', label: 'Công nợ', shortLabel: 'Công nợ', icon: 'creditCard' },
   { path: '#/tiet-kiem', label: 'Tiết kiệm', shortLabel: 'Tiết kiệm', icon: 'target' },
   { path: '#/thong-bao', label: 'Thông báo', shortLabel: 'Thông báo', icon: 'bell' },
 ];

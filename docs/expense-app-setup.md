@@ -478,8 +478,56 @@ Kiểm tra đã chạy chưa: `select * from cron.job;` (thấy job `send-due-no
 Lưu ý: Safari/iOS chỉ hỗ trợ Web Push từ khi đã **"Thêm vào màn hình chính"** (cài như app riêng),
 mở trực tiếp trong Safari thường sẽ không xin được quyền thông báo.
 
-## 11. Việc còn lại
+## 11. Bổ sung sau: "Công nợ phải thu" (người khác nợ mình) (nếu project đã tạo trước khi có mục này)
+
+Trang **Công nợ** (trước là "Quản lý nợ") giờ có 2 chiều: **"Tôi nợ"** (đã có từ mục 8 — mình nợ
+người khác) và **"Người khác nợ tôi"** (mới) — mô hình y hệt mục 8, chỉ đổi chiều: theo từng
+**người nợ** (`debtors`), mỗi người 1 sổ riêng gồm dòng **"cho vay"** (`lend` — tăng số họ nợ mình)
+và **"thu tiền"** (`collect` — giảm). Khác 1 điểm so với "Tôi nợ": cho vay = tiền THẬT SỰ rời khỏi
+túi mình (nếu tích "đưa vào chi tiêu" → tạo giao dịch **CHI**), thu tiền = tiền THẬT SỰ về túi mình
+(nếu tích → tạo giao dịch **THU**) — ngược pha với "Tôi nợ" (ở đó cả ghi nợ lẫn trả nợ đều là chi).
+
+```sql
+create table debtors (
+  id text primary key,
+  name text not null, -- tên người ĐANG NỢ MÌNH, VD "Anh Ba"
+  note text,
+  user_id text references users(id) on delete set null,
+  created_at timestamptz default now()
+);
+create table receivable_entries (
+  id text primary key,
+  debtor_id text not null references debtors(id) on delete cascade,
+  kind text not null check (kind in ('lend','collect')), -- lend = cho vay/bán chịu thêm, collect = thu hồi
+  amount numeric not null,
+  entry_date date not null default current_date,
+  description text,
+  transaction_id text references transactions(id) on delete set null,
+  user_id text references users(id) on delete set null,
+  created_at timestamptz default now()
+);
+create index on debtors (user_id);
+create index on receivable_entries (debtor_id);
+create index on receivable_entries (entry_date);
+
+alter table debtors enable row level security;
+alter table receivable_entries enable row level security;
+grant select, insert, update, delete on debtors, receivable_entries to authenticated, service_role;
+-- Riêng của từng người dùng, giống hệt creditors/debt_entries ở mục 8.
+create policy "own debtors only" on debtors
+  for all using ((auth.jwt() ->> 'row_id') = user_id)
+  with check ((auth.jwt() ->> 'row_id') = user_id);
+create policy "own receivable_entries only" on receivable_entries
+  for all using ((auth.jwt() ->> 'row_id') = user_id)
+  with check ((auth.jwt() ->> 'row_id') = user_id);
+```
+
+Không cần deploy lại Edge Function cho mục này (không có thao tác nhạy cảm nào mới) — trình duyệt
+đọc/ghi thẳng 2 bảng trên qua Row Level Security, giống `creditors`/`debt_entries`.
+
+## 12. Việc còn lại
 
 - [ ] Đổi mật khẩu owner ngay sau lần đăng nhập đầu tiên (app tự bắt đổi).
 - [ ] Rà soát dữ liệu chi tiêu thật trước khi coi là "đang dùng thật".
 - [ ] (Tùy chọn) Làm theo mục 10 nếu muốn dùng Thông báo đẩy/lịch nhắc tự động.
+- [ ] (Tùy chọn) Làm theo mục 11 nếu muốn dùng "Công nợ phải thu" (người khác nợ mình).
