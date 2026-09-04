@@ -325,7 +325,161 @@ create policy "own debt_entries only" on debt_entries
   with check ((auth.jwt() ->> 'row_id') = user_id);
 ```
 
-## 9. Việc còn lại
+## 10. Bổ sung sau: Thông báo đẩy (Push Notifications) — gửi tin cho người khác + lịch nhắc tự động
+
+Tính năng: 1 người dùng có thể **soạn & gửi ngay 1 thông báo cho 1 người khác (hoặc tất cả mọi
+người, hoặc tự nhắc chính mình)**, hoặc **đặt lịch nhắc tới đúng ngày giờ mới tự động gửi** — cả 2
+đều gửi được **Thông báo đẩy thật (Web Push)** tới điện thoại/máy tính, kể cả khi KHÔNG mở app lúc
+đó (giống tin nhắn thật báo về máy). Vào trang **Thông báo** trong app sau khi làm xong các bước
+dưới đây.
+
+Cơ chế: mọi thông báo/lịch nhắc được ghi vào 1 "hàng đợi" (bảng `notifications`) với
+`status='pending'`. Mỗi phút, **Supabase tự gọi 1 lần** vào Edge Function (qua `pg_cron` +
+`pg_net`, không cần máy chủ riêng nào khác) để quét các dòng đã tới giờ và gửi push thật — vì vậy
+"gửi ngay" có thể trễ tối đa khoảng 1 phút, việc bình thường với quy mô gia đình/cá nhân.
+
+### 10.1 Tạo bảng (chạy trong SQL Editor)
+
+```sql
+create table push_subscriptions (
+  id text primary key,
+  user_id text not null references users(id) on delete cascade,
+  endpoint text not null unique, -- 1 thiết bị/trình duyệt = 1 endpoint riêng do trình duyệt cấp
+  p256dh text not null,
+  auth_key text not null,
+  created_at timestamptz default now()
+);
+create index on push_subscriptions (user_id);
+
+create table notifications (
+  id text primary key,
+  from_user_id text references users(id) on delete set null,
+  to_user_id text references users(id) on delete cascade, -- null = gửi cho TẤT CẢ mọi người
+  title text not null,
+  body text not null default '',
+  status text not null default 'pending' check (status in ('pending','sent','cancelled')),
+  send_at timestamptz, -- null = gửi ngay (lượt quét pg_cron kế tiếp); có giá trị = lịch nhắc
+  created_at timestamptz default now(),
+  sent_at timestamptz
+);
+create index on notifications (status);
+create index on notifications (to_user_id);
+create index on notifications (from_user_id);
+
+-- Trạng thái "đã đọc" lưu RIÊNG mỗi người 1 dòng cho mỗi thông báo — vì 1
+-- thông báo gửi cho "tất cả" thì mỗi người đọc/chưa đọc độc lập với nhau.
+create table notification_reads (
+  notification_id text not null references notifications(id) on delete cascade,
+  user_id text not null references users(id) on delete cascade,
+  read_at timestamptz not null default now(),
+  primary key (notification_id, user_id)
+);
+
+alter table push_subscriptions enable row level security;
+alter table notifications enable row level security;
+alter table notification_reads enable row level security;
+
+grant select, insert, update, delete on push_subscriptions, notifications, notification_reads
+  to authenticated, service_role;
+
+-- Mỗi người chỉ quản lý được đăng ký push của CHÍNH THIẾT BỊ/TÀI KHOẢN mình.
+create policy "own push subscriptions" on push_subscriptions
+  for all using ((auth.jwt() ->> 'row_id') = user_id)
+  with check ((auth.jwt() ->> 'row_id') = user_id);
+
+-- Xem được: thông báo gửi riêng cho mình, HOẶC gửi cho tất cả, HOẶC do chính mình gửi (để xem lại
+-- lịch sử đã gửi/lịch đã đặt). Tạo mới: chỉ tạo được với from_user_id = chính mình. Sửa (đổi
+-- status='cancelled' để hủy lịch, hoặc do Edge Function service_role đổi 'sent'): người tạo hoặc
+-- người nhận. Xóa: chỉ người tạo.
+create policy "see own inbox or sent" on notifications
+  for select using (
+    (auth.jwt() ->> 'row_id') = to_user_id or to_user_id is null or (auth.jwt() ->> 'row_id') = from_user_id
+  );
+create policy "create own notifications" on notifications
+  for insert with check ((auth.jwt() ->> 'row_id') = from_user_id);
+create policy "update own inbox or own pending" on notifications
+  for update using (
+    (auth.jwt() ->> 'row_id') = to_user_id or (auth.jwt() ->> 'row_id') = from_user_id
+  );
+create policy "delete own sent" on notifications
+  for delete using ((auth.jwt() ->> 'row_id') = from_user_id);
+
+create policy "own reads" on notification_reads
+  for all using ((auth.jwt() ->> 'row_id') = user_id)
+  with check ((auth.jwt() ->> 'row_id') = user_id);
+```
+
+### 10.2 Tạo cặp khóa VAPID (để ký/mã hóa thông báo đẩy)
+
+Chạy trên máy bạn (cần Node.js, máy nào có Node là chạy được, không cần cài gì thêm):
+
+```bash
+node scripts/generate-vapid-keys.js
+```
+
+In ra 2 giá trị `VAPID_PUBLIC_KEY` và `VAPID_PRIVATE_KEY` — giữ lại cả 2, dùng ở bước 10.3 và 10.4.
+
+### 10.3 Deploy lại Edge Function + thêm Secrets
+
+1. Copy lại toàn bộ nội dung MỚI của `supabase/functions/create-account/index.ts` **VÀ**
+   `supabase/functions/create-account/webpush.ts` (function này giờ có 2 file) → dán đè vào Edge
+   Function đã tạo ở mục 4 → **Deploy** lại.
+2. Vào **Edge Functions → Secrets**, thêm 4 secrets mới:
+   - `VAPID_PUBLIC_KEY` — dán giá trị lấy được ở bước 10.2.
+   - `VAPID_PRIVATE_KEY` — dán giá trị lấy được ở bước 10.2 (secret, không lộ ra ngoài).
+   - `VAPID_SUBJECT` — `mailto:` + email của bạn (bắt buộc phải có, dịch vụ push dùng để liên hệ
+     nếu app gửi quá nhiều/spam), VD `mailto:ban@gmail.com`.
+   - `CRON_SECRET_KEY` — tự nghĩ 1 chuỗi ký tự ngẫu nhiên dài (VD 32 ký tự bất kỳ) — mật khẩu riêng
+     để `pg_cron` được phép gọi vào function, không liên quan tới tài khoản đăng nhập nào.
+
+### 10.4 Cập nhật code phía trình duyệt
+
+Mở `js/lib/push.js`, điền `VAPID_PUBLIC_KEY` (đúng giá trị lấy ở bước 10.2 — public key này AN
+TOÀN để commit công khai, giống anon key, khác với `VAPID_PRIVATE_KEY` tuyệt đối không được đặt ở
+đây).
+
+### 10.5 Bật lịch tự động gửi (pg_cron, chạy mỗi phút)
+
+Vào **Database → Extensions**, bật (Enable) 2 extension: **pg_cron** và **pg_net**. Sau đó chạy
+trong **SQL Editor** (thay `EDGE_FUNCTION_URL` bằng đúng URL thật của function — chính là `API_FN_URL` đã điền ở mục 4,
+`ANON_KEY` bằng anon public key của project ở mục 1.2, và `CRON_SECRET_KEY_VALUE` bằng đúng giá
+trị đã đặt ở bước 10.3):
+
+```sql
+select cron.schedule(
+  'send-due-notifications',
+  '* * * * *', -- mỗi phút
+  $$
+  select net.http_post(
+    url := 'EDGE_FUNCTION_URL',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'Authorization', 'Bearer ANON_KEY',
+      'x-cron-secret', 'CRON_SECRET_KEY_VALUE'
+    ),
+    body := jsonb_build_object('type', 'send-due')
+  );
+  $$
+);
+```
+
+Kiểm tra đã chạy chưa: `select * from cron.job;` (thấy job `send-due-notifications`) và
+`select * from cron.job_run_details order by start_time desc limit 5;` (xem lịch sử chạy, cột
+`status` phải là `succeeded`).
+
+### 10.6 Thử nghiệm
+
+1. Mở app → **Thông báo** → bấm **"Bật thông báo trên thiết bị này"** → cho phép khi trình duyệt
+   hỏi quyền.
+2. Bấm **"Soạn thông báo"** → chọn người nhận **"Chỉ mình tôi"** → nhập tiêu đề → **Gửi ngay**.
+3. Chờ tối đa ~1 phút, điện thoại/máy tính sẽ hiện thông báo dù đã tắt tab trình duyệt (miễn thiết
+   bị còn kết nối mạng và trình duyệt/hệ điều hành đang chạy).
+
+Lưu ý: Safari/iOS chỉ hỗ trợ Web Push từ khi đã **"Thêm vào màn hình chính"** (cài như app riêng),
+mở trực tiếp trong Safari thường sẽ không xin được quyền thông báo.
+
+## 11. Việc còn lại
 
 - [ ] Đổi mật khẩu owner ngay sau lần đăng nhập đầu tiên (app tự bắt đổi).
 - [ ] Rà soát dữ liệu chi tiêu thật trước khi coi là "đang dùng thật".
+- [ ] (Tùy chọn) Làm theo mục 10 nếu muốn dùng Thông báo đẩy/lịch nhắc tự động.

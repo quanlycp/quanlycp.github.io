@@ -14,6 +14,10 @@
 //   { type: 'verify-own-password', password } / { type: 'set-own-password',
 //     newPassword, mustChangePassword? } -> tự đổi mật khẩu CHÍNH MÌNH, cần
 //     JWT hợp lệ (owner hoặc member đều được).
+//   { type: 'send-due' } -> hệ thống (pg_cron gọi mỗi phút), cần header
+//     "x-cron-secret" đúng CRON_SECRET_KEY, KHÔNG dùng JWT — gửi push cho các
+//     thông báo/lịch nhắc trong bảng notifications đã tới giờ (xem
+//     docs/expense-app-setup.md mục 10).
 //   Tất cả các "type" còn lại BẮT BUỘC header Authorization: Bearer <JWT>
 //   của 1 user role='owner' (xác minh lại tại server, không tin JWT mù):
 //     { type: 'member', username, name?, password? } — tạo tài khoản member mới
@@ -22,10 +26,19 @@
 // password bỏ trống thì tự sinh mật khẩu tạm ngẫu nhiên (trả về trong response).
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { sendWebPush } from './webpush.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 const JWT_SECRET = Deno.env.get('CUSTOM_JWT_SECRET')!;
+// Thông báo đẩy (Web Push) — xem docs/expense-app-setup.md mục 10. 3 biến VAPID_* dùng để
+// "tự giới thiệu" với dịch vụ push của trình duyệt + mã hóa nội dung; CRON_SECRET_KEY là mật
+// khẩu riêng để pg_cron (chạy mỗi phút trong Supabase) được phép gọi type 'send-due' bên dưới
+// — KHÔNG dùng JWT người dùng vì đây là tác vụ hệ thống, không ai đang đăng nhập lúc đó cả.
+const VAPID_PUBLIC_KEY = Deno.env.get('VAPID_PUBLIC_KEY') || '';
+const VAPID_PRIVATE_KEY = Deno.env.get('VAPID_PRIVATE_KEY') || '';
+const VAPID_SUBJECT = Deno.env.get('VAPID_SUBJECT') || 'mailto:admin@example.com';
+const CRON_SECRET_KEY = Deno.env.get('CRON_SECRET_KEY') || '';
 
 const LOCK_AFTER_FAILS = 5;
 const LOCK_MINUTES = 15;
@@ -172,6 +185,46 @@ Deno.serve(async (req) => {
     const { error } = await admin.from('users').update(patch).eq('id', selfClaims.row_id);
     if (error) return json({ ok: false, reason: 'Lỗi hệ thống, thử lại sau.' }, 500);
     return json({ ok: true });
+  }
+
+  // ===== type: 'send-due' — pg_cron gọi mỗi phút (KHÔNG có JWT người dùng nào cả, đây là
+  // tác vụ hệ thống) để gửi push cho các thông báo/lịch nhắc đã tới giờ. Xác thực bằng 1 mật
+  // khẩu riêng (CRON_SECRET_KEY) qua header, không dùng verifyJwt() ở trên. =====
+  if (body.type === 'send-due') {
+    const cronSecret = req.headers.get('x-cron-secret') || '';
+    if (!CRON_SECRET_KEY || cronSecret !== CRON_SECRET_KEY) return json({ ok: false, reason: 'Unauthorized' }, 401);
+    if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) return json({ ok: false, reason: 'Chưa cấu hình VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY.' }, 500);
+
+    const { data: pending, error } = await admin.from('notifications').select('*').eq('status', 'pending').limit(500);
+    if (error) { console.error('query notifications error:', error); return json({ ok: false, reason: 'Lỗi hệ thống, thử lại sau.' }, 500); }
+
+    const now = Date.now();
+    // Lọc "đã tới giờ" ở đây (thay vì trong query) để khỏi phải lo cú pháp lọc timestamp của
+    // PostgREST với chuỗi ISO chứa dấu ":"/".": dễ viết sai, còn số lượng "đang chờ" của app
+    // gia đình/cá nhân này chắc chắn nhỏ nên lọc ở code không tốn kém gì.
+    const due = (pending || []).filter((n) => !n.send_at || new Date(n.send_at).getTime() <= now);
+
+    let sent = 0;
+    for (const n of due) {
+      let q = admin.from('push_subscriptions').select('*');
+      if (n.to_user_id) q = q.eq('user_id', n.to_user_id); // không có to_user_id = gửi cho TẤT CẢ thiết bị đã đăng ký
+      const { data: subs } = await q;
+      for (const s of subs || []) {
+        try {
+          const result = await sendWebPush(
+            { endpoint: s.endpoint, p256dh: s.p256dh, auth: s.auth_key },
+            { title: n.title, body: n.body || '', url: '#/thong-bao' },
+            VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_SUBJECT,
+          );
+          if (result.expired) await admin.from('push_subscriptions').delete().eq('id', s.id);
+        } catch (e) {
+          console.error('sendWebPush error:', e);
+        }
+      }
+      await admin.from('notifications').update({ status: 'sent', sent_at: new Date().toISOString() }).eq('id', n.id);
+      sent++;
+    }
+    return json({ ok: true, sent });
   }
 
   // ===== Mọi type khác: bắt buộc JWT của user role='owner' =====

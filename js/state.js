@@ -11,6 +11,7 @@
 // ============================================================
 import { genId, colorAt } from './utils.js';
 import { getSupabaseClient, callLoginFunction, callAccountFunction } from './lib/supabaseClient.js';
+import { subscribeThisDevice, unsubscribeThisDevice, getCurrentEndpoint } from './lib/push.js';
 
 export const STORAGE_KEY = 'chitieu_v1';
 
@@ -43,6 +44,7 @@ function emptyState() {
   return {
     settings: { householdName: 'Sổ chi tiêu của tôi', currency: 'đ' },
     users: [], categories: [], transactions: [], budgets: [], recurring: [], savingsGoals: [], plans: [], creditors: [], debtEntries: [],
+    notifications: [], notificationReads: [],
     session: null,
   };
 }
@@ -111,7 +113,7 @@ export async function login(identifier, password) {
 
 async function loadSessionData(token) {
   const sb = getSupabaseClient(token);
-  const [{ data: userRows }, { data: catRows }, { data: txnRows }, { data: budgetRows }, { data: recRows }, { data: goalRows }, { data: planRows }, { data: creditorRows }, { data: debtEntryRows }] = await Promise.all([
+  const [{ data: userRows }, { data: catRows }, { data: txnRows }, { data: budgetRows }, { data: recRows }, { data: goalRows }, { data: planRows }, { data: creditorRows }, { data: debtEntryRows }, { data: notiRows }, { data: readRows }] = await Promise.all([
     sb.from('user_profiles').select('*'),
     sb.from('categories').select('*').order('sort_order'),
     sb.from('transactions').select('*').order('txn_date', { ascending: false }),
@@ -121,6 +123,8 @@ async function loadSessionData(token) {
     sb.from('plans').select('*'),
     sb.from('creditors').select('*'),
     sb.from('debt_entries').select('*').order('entry_date', { ascending: false }),
+    sb.from('notifications').select('*'),
+    sb.from('notification_reads').select('notification_id'),
   ]);
   state.users = (userRows || []).map(mapUserProfileRow);
   state.categories = (catRows || []).map(mapCategoryRow);
@@ -131,6 +135,8 @@ async function loadSessionData(token) {
   state.plans = (planRows || []).map(mapPlanRow);
   state.creditors = (creditorRows || []).map(mapCreditorRow);
   state.debtEntries = (debtEntryRows || []).map(mapDebtEntryRow);
+  state.notifications = (notiRows || []).map(mapNotificationRow);
+  state.notificationReads = (readRows || []).map((r) => r.notification_id);
   if (state.categories.length === 0) await seedDefaultCategories(sb);
 }
 
@@ -190,6 +196,13 @@ function mapDebtEntryRow(row) {
     id: row.id, creditorId: row.creditor_id, kind: row.kind, amount: Number(row.amount),
     date: row.entry_date, description: row.description || '',
     transactionId: row.transaction_id, userId: row.user_id, createdAt: row.created_at,
+  };
+}
+function mapNotificationRow(row) {
+  return {
+    id: row.id, fromUserId: row.from_user_id, toUserId: row.to_user_id,
+    title: row.title, body: row.body || '', status: row.status,
+    sendAt: row.send_at, createdAt: row.created_at, sentAt: row.sent_at,
   };
 }
 
@@ -803,6 +816,109 @@ export async function deleteCreditorsByName(name) {
 }
 
 // ------------------------------------------------------------
+// Thông báo — "gửi cho user khác" (ngay lập tức) hoặc "lịch nhắc" (đặt giờ,
+// tự động gửi khi tới hạn), cả 2 đều tạo 1 dòng trong bảng notifications với
+// status='pending'; 1 Edge Function được lịch chạy mỗi phút (pg_cron, xem
+// docs/expense-app-setup.md mục 10) quét các dòng đã tới giờ (send_at null =
+// gửi ngay) rồi tự gửi Thông báo đẩy (Web Push) và chuyển status='sent'.
+// toUserId = null nghĩa là gửi cho TẤT CẢ mọi người dùng trong sổ.
+//
+// Trạng thái ĐÃ ĐỌC lưu riêng ở notification_reads (mỗi người 1 dòng cho mỗi
+// thông báo mình đã xem) — vì 1 thông báo có thể gửi cho nhiều người (toUserId
+// null) nên không thể dùng chung 1 cột "đã đọc" cho tất cả.
+// ------------------------------------------------------------
+export function listInboxNotifications() {
+  const session = getSession();
+  const readSet = new Set(state.notificationReads);
+  return state.notifications
+    .filter((n) => n.status === 'sent' && (n.toUserId === session.id || n.toUserId == null))
+    .map((n) => ({ ...n, read: readSet.has(n.id) }))
+    .sort((a, b) => (b.sentAt || '').localeCompare(a.sentAt || ''));
+}
+/** Lịch sử những thông báo CHÍNH MÌNH đã gửi (đã được hệ thống gửi xong). */
+export function listSentNotifications() {
+  const session = getSession();
+  return state.notifications.filter((n) => n.fromUserId === session.id && n.status === 'sent').sort((a, b) => (b.sentAt || '').localeCompare(a.sentAt || ''));
+}
+/** Lịch nhắc CHÍNH MÌNH đã đặt, chưa tới giờ gửi (có thể hủy). */
+export function listScheduledNotifications() {
+  const session = getSession();
+  return state.notifications.filter((n) => n.fromUserId === session.id && n.status === 'pending').sort((a, b) => (a.sendAt || '').localeCompare(b.sendAt || ''));
+}
+export function unreadInboxCount() {
+  return listInboxNotifications().filter((n) => !n.read).length;
+}
+/** Gửi ngay 1 thông báo tự soạn cho 1 người khác (toUserId) hoặc tất cả (toUserId falsy). Có thể trễ tối đa ~1 phút (chờ lượt quét kế tiếp của pg_cron). */
+export async function sendNotificationNow({ toUserId, title, body }) {
+  const session = getSession();
+  const sb = getSupabaseClient(session?.sbToken);
+  const t = (title || '').trim();
+  if (!t) throw new Error('Cần nhập tiêu đề thông báo.');
+  const row = { id: genId('noti'), from_user_id: session.id, to_user_id: toUserId || null, title: t, body: (body || '').trim(), status: 'pending', send_at: null };
+  const { error } = await sb.from('notifications').insert(row);
+  if (error) throw new Error('Không gửi được thông báo, thử lại sau.');
+  state.notifications.unshift(mapNotificationRow({ ...row, created_at: new Date().toISOString() }));
+  notify();
+}
+/** Đặt lịch nhắc tới đúng ngày giờ `sendAt` (ISO hoặc chuỗi Date hiểu được) mới tự động gửi. */
+export async function scheduleReminder({ toUserId, title, body, sendAt }) {
+  if (!sendAt) throw new Error('Cần chọn ngày giờ nhắc.');
+  const session = getSession();
+  const sb = getSupabaseClient(session?.sbToken);
+  const t = (title || '').trim();
+  if (!t) throw new Error('Cần nhập tiêu đề thông báo.');
+  const row = { id: genId('noti'), from_user_id: session.id, to_user_id: toUserId || null, title: t, body: (body || '').trim(), status: 'pending', send_at: new Date(sendAt).toISOString() };
+  const { error } = await sb.from('notifications').insert(row);
+  if (error) throw new Error('Không đặt được lịch nhắc, thử lại sau.');
+  state.notifications.unshift(mapNotificationRow({ ...row, created_at: new Date().toISOString() }));
+  notify();
+}
+/** Hủy 1 lịch nhắc CHƯA tới giờ gửi (đổi status='cancelled' — pg_cron sẽ bỏ qua). */
+export async function cancelScheduledNotification(id) {
+  const session = getSession();
+  const sb = getSupabaseClient(session?.sbToken);
+  const { error } = await sb.from('notifications').update({ status: 'cancelled' }).eq('id', id);
+  if (error) throw new Error('Không hủy được, thử lại sau.');
+  state.notifications = state.notifications.filter((n) => n.id !== id);
+  notify();
+}
+export async function markNotificationRead(id) {
+  if (state.notificationReads.includes(id)) return;
+  const session = getSession();
+  const sb = getSupabaseClient(session?.sbToken);
+  const { error } = await sb.from('notification_reads').upsert({ notification_id: id, user_id: session.id }, { onConflict: 'notification_id,user_id' });
+  if (error) return; // không nghiêm trọng — khỏi chặn thao tác của người dùng vì lỗi lưu "đã đọc"
+  state.notificationReads.push(id);
+  notify();
+}
+export async function markAllInboxRead() {
+  const unread = listInboxNotifications().filter((n) => !n.read);
+  for (const n of unread) await markNotificationRead(n.id);
+}
+
+// ---- Thông báo đẩy (Web Push) trên THIẾT BỊ đang dùng — bật/tắt riêng từng thiết bị ----
+export async function isThisDevicePushEnabled() {
+  return !!(await getCurrentEndpoint());
+}
+export async function enablePushOnThisDevice() {
+  const session = getSession();
+  const { endpoint, p256dh, auth } = await subscribeThisDevice();
+  const sb = getSupabaseClient(session?.sbToken);
+  const { error } = await sb.from('push_subscriptions').upsert(
+    { id: genId('push'), user_id: session.id, endpoint, p256dh, auth_key: auth },
+    { onConflict: 'endpoint' },
+  );
+  if (error) throw new Error('Không lưu được đăng ký nhận thông báo, thử lại sau.');
+}
+export async function disablePushOnThisDevice() {
+  const session = getSession();
+  const endpoint = await unsubscribeThisDevice();
+  if (!endpoint) return;
+  const sb = getSupabaseClient(session?.sbToken);
+  await sb.from('push_subscriptions').delete().eq('endpoint', endpoint);
+}
+
+// ------------------------------------------------------------
 // Session (đăng nhập hiện tại)
 // ------------------------------------------------------------
 export function getSession() { return state.session; }
@@ -810,5 +926,6 @@ export function setSession(session) { state.session = session; notify(); }
 export function logout() {
   state.session = null;
   state.users = []; state.categories = []; state.transactions = []; state.budgets = []; state.recurring = []; state.savingsGoals = []; state.plans = []; state.creditors = []; state.debtEntries = [];
+  state.notifications = []; state.notificationReads = [];
   notify();
 }

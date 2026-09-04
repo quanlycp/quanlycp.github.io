@@ -16,3 +16,35 @@ self.addEventListener('fetch', (event) => {
   // ẩn danh không có cache).
   event.respondWith(fetch(event.request, { cache: 'no-store' }));
 });
+
+// Thông báo đẩy (Web Push) — Edge Function (được pg_cron gọi mỗi phút, xem
+// docs/expense-app-setup.md mục 10) gửi 1 payload JSON {title, body, url} tới
+// đây, kể cả khi app đang ĐÓNG (service worker vẫn được đánh thức dậy để xử lý).
+self.addEventListener('push', (event) => {
+  let data = {};
+  try { data = event.data ? event.data.json() : {}; } catch (e) { data = { title: 'Sổ chi tiêu', body: event.data ? event.data.text() : '' }; }
+  const title = data.title || 'Sổ chi tiêu';
+  event.waitUntil(self.registration.showNotification(title, {
+    body: data.body || '',
+    icon: 'icons/app-icon-192.png',
+    badge: 'icons/app-icon-192.png',
+    data: { url: data.url || '#/thong-bao' },
+  }));
+});
+
+// Bấm vào thông báo -> mở app (hoặc focus tab đang mở sẵn) đúng vào trang Thông báo.
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const targetUrl = new URL((event.notification.data && event.notification.data.url) || '#/thong-bao', self.registration.scope).href;
+  event.waitUntil((async () => {
+    const allClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    for (const client of allClients) {
+      if ('focus' in client) {
+        await client.focus();
+        if ('navigate' in client) { try { await client.navigate(targetUrl); } catch (e) { /* bỏ qua, focus là đủ */ } }
+        return;
+      }
+    }
+    if (self.clients.openWindow) await self.clients.openWindow(targetUrl);
+  })());
+});

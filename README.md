@@ -26,6 +26,9 @@ Web app quản lý chi tiêu & kế hoạch ngân sách hàng tháng cho gia đ�
   thanh phần trăm.
 - **Quản lý User**: chỉ chủ sổ thấy — tạo tài khoản thành viên mới (mật khẩu tạm tự sinh), cấp lại
   mật khẩu, xóa tài khoản (không mất giao dịch đã ghi trong sổ chung).
+- **Thông báo**: bật Thông báo đẩy (Web Push) trên từng thiết bị, soạn & gửi ngay 1 thông báo cho
+  1 người khác/tất cả mọi người/chính mình, hoặc đặt **lịch nhắc** tới đúng ngày giờ mới tự động
+  gửi — nhận được cả khi không mở app (cần cấu hình thêm, xem `docs/expense-app-setup.md` mục 10).
 
 ## Chạy thử
 
