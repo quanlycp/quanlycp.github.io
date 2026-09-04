@@ -11,8 +11,9 @@ export const NAV = [
   { path: '#/ke-hoach', label: 'Kế hoạch', shortLabel: 'Kế hoạch', icon: 'calendar' },
   { path: '#/danh-muc', label: 'Danh mục', shortLabel: 'Danh mục', icon: 'tag' },
   { path: '#/dinh-ky', label: 'Định kỳ', shortLabel: 'Định kỳ', icon: 'refresh' },
-  { path: '#/no', label: 'Quản lý nợ', shortLabel: 'Nợ', icon: 'creditCard' },
+  { path: '#/no', label: 'Công nợ', shortLabel: 'Công nợ', icon: 'creditCard' },
   { path: '#/tiet-kiem', label: 'Tiết kiệm', shortLabel: 'Tiết kiệm', icon: 'target' },
+  { path: '#/thong-bao', label: 'Thông báo', shortLabel: 'Thông báo', icon: 'bell' },
 ];
 export const NAV_OWNER_ONLY = [
   { path: '#/nguoi-dung', label: 'Quản lý User', shortLabel: 'User', icon: 'idCard' },
@@ -58,7 +59,7 @@ export function buildShell(root, isOwner) {
 
 function renderSidebarNav(nav) {
   const el = document.getElementById('sidebar-nav');
-  el.innerHTML = nav.map((item) => `<a href="${item.path}" data-path="${item.path}">${icon(item.icon)}<span>${item.label}</span></a>`).join('');
+  el.innerHTML = nav.map((item) => `<a href="${item.path}" data-path="${item.path}">${icon(item.icon)}<span>${item.label}</span><span class="nav-badge" data-badge-for="${item.path}" hidden></span></a>`).join('');
 }
 
 const CHANGE_PW_ITEM = { path: '#/doi-mat-khau', label: 'Đổi mật khẩu', icon: 'lock' };
@@ -68,10 +69,30 @@ function renderBottomNav(nav) {
   const direct = nav.slice(0, BOTTOM_NAV_MAX_DIRECT);
   const overflow = [...nav.slice(BOTTOM_NAV_MAX_DIRECT), CHANGE_PW_ITEM];
   // Luôn còn ít nhất "Đổi mật khẩu" trong "Thêm" nên nút Thêm luôn hiện trên mobile.
-  el.innerHTML = direct.map((item) => `<a href="${item.path}" data-path="${item.path}">${icon(item.icon)}<span>${item.shortLabel || item.label}</span></a>`).join('')
-    + `<button class="more-btn" id="btn-more-bottom">${icon('more')}<span>Thêm</span></button>`;
+  el.innerHTML = direct.map((item) => `<a href="${item.path}" data-path="${item.path}">${icon(item.icon)}<span>${item.shortLabel || item.label}</span><span class="nav-badge" data-badge-for="${item.path}" hidden></span></a>`).join('')
+    + `<button class="more-btn" id="btn-more-bottom">${icon('more')}<span>Thêm</span><span class="nav-badge" id="more-badge" hidden></span></button>`;
   const moreBtn = document.getElementById('btn-more-bottom');
   if (moreBtn) moreBtn.addEventListener('click', () => openMoreSheet(overflow));
+}
+
+/** Cập nhật số hiện trên nav (vd: số thông báo chưa đọc). `counts`: { '#/thong-bao': 3 }. Mục nằm
+ * trong "Thêm" (mobile) không có chỗ hiện badge riêng -> gộp chung vào badge của nút "Thêm". */
+export function updateNavBadges(counts) {
+  Object.entries(counts).forEach(([path, count]) => {
+    document.querySelectorAll(`[data-badge-for="${path}"]`).forEach((el) => {
+      el.textContent = count > 99 ? '99+' : String(count);
+      el.hidden = !count;
+    });
+  });
+  const moreBadge = document.getElementById('more-badge');
+  if (moreBadge) {
+    // Mục nào đã có chỗ hiện badge riêng NGAY trên thanh dưới (4 mục đầu) thì khỏi cộng dồn vào
+    // "Thêm" nữa, kẻo hiện 2 lần — chỉ cộng phần đang bị gộp vào "Thêm" (mục thứ 5 trở đi).
+    const directPaths = new Set([...document.querySelectorAll('#bottom-nav [data-badge-for]')].map((el) => el.dataset.badgeFor));
+    const hiddenTotal = Object.entries(counts).reduce((s, [path, count]) => s + (directPaths.has(path) ? 0 : count), 0);
+    moreBadge.textContent = hiddenTotal > 99 ? '99+' : String(hiddenTotal);
+    moreBadge.hidden = !hiddenTotal;
+  }
 }
 
 /** Bảng "Thêm" — gộp các mục menu còn lại + Đổi mật khẩu + Đăng xuất, tránh nhồi quá nhiều mục vào 1 hàng menu. */

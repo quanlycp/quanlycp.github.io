@@ -24,8 +24,14 @@ Web app quản lý chi tiêu & kế hoạch ngân sách hàng tháng cho gia đ�
   trong tháng mà chưa ghi sổ — xác nhận là tự tạo giao dịch, không cần nhập lại từ đầu mỗi tháng.
 - **Mục tiêu tiết kiệm**: đặt mục tiêu (số tiền, hạn hoàn thành), góp/rút theo dõi tiến độ bằng
   thanh phần trăm.
+- **Công nợ** (riêng tư của từng người dùng, không hiện ở Tổng quan): theo dõi cả 2 chiều — **"Tôi
+  nợ"** (mình nợ ai, ghi nợ/trả nợ theo từng chủ nợ) và **"Người khác nợ tôi"** (cho vay/bán chịu,
+  thu tiền về theo từng người nợ) — có thể tùy chọn đưa từng khoản vào thu/chi thật.
 - **Quản lý User**: chỉ chủ sổ thấy — tạo tài khoản thành viên mới (mật khẩu tạm tự sinh), cấp lại
   mật khẩu, xóa tài khoản (không mất giao dịch đã ghi trong sổ chung).
+- **Thông báo**: bật Thông báo đẩy (Web Push) trên từng thiết bị, soạn & gửi ngay 1 thông báo cho
+  1 người khác/tất cả mọi người/chính mình, hoặc đặt **lịch nhắc** tới đúng ngày giờ mới tự động
+  gửi — nhận được cả khi không mở app (cần cấu hình thêm, xem `docs/expense-app-setup.md` mục 10).
 
 ## Chạy thử
 

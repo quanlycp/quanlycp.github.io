@@ -1,3 +1,10 @@
+// Công nợ — 2 CHIỀU dùng chung 1 màn hình (chuyển bằng tab trên cùng):
+//  - "Tôi nợ": mình nợ người khác, theo từng CHỦ NỢ (creditors/debt_entries).
+//  - "Người khác nợ tôi": người khác nợ mình, theo từng NGƯỜI NỢ (debtors/
+//    receivable_entries) — xem state.js.
+// 2 chiều giống hệt nhau về luồng thao tác (ghi tăng nợ / ghi giảm nợ / đổi
+// tên / sửa & xóa từng dòng), chỉ khác chữ nghĩa + hàm state.js đứng sau nên
+// gom vào object DIRECTIONS bên dưới thay vì chép lại 2 lần.
 import * as S from '../state.js';
 import { icon } from '../icons.js';
 import { pageHeader } from '../components/shell.js';
@@ -6,138 +13,218 @@ import { emptyState } from '../components/ui.js';
 import { toast } from '../components/toast.js';
 import { formatVND, formatDate, formatNumber, attachMoneyInput, unformatMoney } from '../utils.js';
 
-// Quản lý nợ theo TỪNG CHỦ NỢ (vd "Tạp hóa A") — mỗi chủ nợ 1 sổ riêng gồm
-// nhiều dòng "ghi nợ" (mua gì, ngày nào, nợ bao nhiêu) và "trả nợ" (ngày
-// nào, trả bao nhiêu). Riêng tư của người đang đăng nhập, không hiện ở
-// Tổng quan (xem state.js).
+const DIRECTIONS = {
+  owe: {
+    tabLabel: 'Tôi nợ',
+    listIcon: 'creditCard',
+    totalLabel: 'Tổng còn nợ',
+    totalColor: 'var(--danger)',
+    outstandingColor: 'var(--danger)',
+    settledColor: 'var(--success)',
+    counterpartLabel: 'Chủ nợ', counterpartPlaceholder: 'VD: Tạp hóa A',
+    renameTitle: 'Đổi tên chủ nợ',
+    addBtnLabel: 'Ghi nợ mới',
+    increaseModalTitle: 'Ghi nợ mới', increaseDetailBtn: 'Ghi nợ thêm',
+    increaseDateLabel: 'Ngày mua nợ', increaseDescLabel: 'Mua gì (không bắt buộc)', increaseDescPlaceholder: 'VD: gạo, mắm, dầu ăn',
+    increaseAmountLabel: 'Số tiền nợ', increaseSubmitLabel: 'Ghi nợ',
+    increaseTxnLabel: 'Đưa vào chi tiêu tháng này', increaseTxnType: 'expense',
+    increaseEntryLabel: 'Ghi nợ', increaseIcon: 'cart',
+    decreaseTitle: (name) => `Trả nợ — ${name}`, decreaseDetailBtn: 'Trả nợ',
+    decreaseAmountLabel: 'Số tiền trả', decreaseDateLabel: 'Ngày trả', decreaseSubmitLabel: 'Xác nhận trả nợ',
+    decreaseTxnLabel: 'Đưa vào chi tiêu tháng này', decreaseTxnType: 'expense',
+    decreaseEntryLabel: 'Trả nợ', decreaseIcon: 'check',
+    entryEditIncreaseTitle: 'Sửa ghi nợ', entryEditDecreaseTitle: 'Sửa trả nợ',
+    entryDetailIncreaseTitle: 'Dòng ghi nợ', entryDetailDecreaseTitle: 'Dòng trả nợ',
+    entryDescLabel: 'Mua gì',
+    statusActiveTab: 'Đang nợ', statusPaidTab: 'Đã trả hết',
+    statusActiveLabel: 'còn nợ', statusPaidLabel: 'đã hết nợ',
+    emptyActive: { title: 'Chưa có khoản nợ nào', message: 'Bấm "Ghi nợ mới" để ghi lại khoản mua/vay nợ theo từng chủ nợ.' },
+    emptyPaid: { title: 'Chưa có chủ nợ nào trả hết', message: 'Chủ nợ trả hết nợ sẽ chuyển sang đây.' },
+    deleteNameConfirm: (name, warn) => `Xóa toàn bộ lịch sử/sổ nợ mang tên "${name}" khỏi gợi ý.${warn} Các giao dịch chi tiêu đã ghi khi trả nợ trước đó vẫn được giữ nguyên. Không thể hoàn tác.`,
+    api: {
+      list: S.listCreditors, get: S.getCreditor, balance: S.creditorBalance, listNames: S.listCreditorNames, listEntries: S.listDebtEntries,
+      total: S.totalDebtRemaining, addIncrease: S.addDebtCharge, addDecrease: S.addDebtPayment,
+      updateEntry: S.updateDebtEntry, deleteEntry: S.deleteDebtEntry, updateCounterpart: S.updateCreditor, deleteByName: S.deleteCreditorsByName,
+      counterpartIdKey: 'creditorId', counterpartNameKey: 'creditorName',
+      increaseKind: 'charge', decreaseKind: 'payment',
+    },
+  },
+  receivable: {
+    tabLabel: 'Người khác nợ tôi',
+    listIcon: 'trendingUp',
+    totalLabel: 'Tổng sẽ thu về',
+    totalColor: 'var(--color-primary-dark)',
+    outstandingColor: 'var(--color-primary-dark)',
+    settledColor: 'var(--success)',
+    counterpartLabel: 'Người nợ', counterpartPlaceholder: 'VD: Anh Ba',
+    renameTitle: 'Đổi tên người nợ',
+    addBtnLabel: 'Cho vay mới',
+    increaseModalTitle: 'Cho vay mới', increaseDetailBtn: 'Cho vay thêm',
+    increaseDateLabel: 'Ngày cho vay', increaseDescLabel: 'Cho vay để làm gì (không bắt buộc)', increaseDescPlaceholder: 'VD: mượn tiền mặt, bán chịu hàng',
+    increaseAmountLabel: 'Số tiền cho vay', increaseSubmitLabel: 'Cho vay',
+    increaseTxnLabel: 'Tính là 1 khoản chi tiêu (tiền thật rời túi)', increaseTxnType: 'expense',
+    increaseEntryLabel: 'Cho vay', increaseIcon: 'trendingUp',
+    decreaseTitle: (name) => `Thu tiền — ${name}`, decreaseDetailBtn: 'Thu tiền',
+    decreaseAmountLabel: 'Số tiền thu', decreaseDateLabel: 'Ngày thu', decreaseSubmitLabel: 'Xác nhận thu tiền',
+    decreaseTxnLabel: 'Tính là 1 khoản thu nhập (tiền thật về túi)', decreaseTxnType: 'income',
+    decreaseEntryLabel: 'Thu tiền', decreaseIcon: 'check',
+    entryEditIncreaseTitle: 'Sửa khoản cho vay', entryEditDecreaseTitle: 'Sửa khoản thu',
+    entryDetailIncreaseTitle: 'Dòng cho vay', entryDetailDecreaseTitle: 'Dòng thu tiền',
+    entryDescLabel: 'Cho vay để làm gì',
+    statusActiveTab: 'Còn nợ mình', statusPaidTab: 'Đã trả hết',
+    statusActiveLabel: 'còn nợ mình', statusPaidLabel: 'đã trả hết',
+    emptyActive: { title: 'Chưa có khoản cho vay nào', message: 'Bấm "Cho vay mới" để ghi lại khoản cho vay/bán chịu theo từng người.' },
+    emptyPaid: { title: 'Chưa có ai trả hết', message: 'Người trả hết nợ sẽ chuyển sang đây.' },
+    deleteNameConfirm: (name, warn) => `Xóa toàn bộ lịch sử/sổ mang tên "${name}" khỏi gợi ý.${warn} Các giao dịch thu/chi đã ghi trước đó vẫn được giữ nguyên. Không thể hoàn tác.`,
+    api: {
+      list: S.listDebtors, get: S.getDebtor, balance: S.debtorBalance, listNames: S.listDebtorNames, listEntries: S.listReceivableEntries,
+      total: S.totalReceivable, addIncrease: S.addReceivableLend, addDecrease: S.addReceivableCollect,
+      updateEntry: S.updateReceivableEntry, deleteEntry: S.deleteReceivableEntry, updateCounterpart: S.updateDebtor, deleteByName: S.deleteDebtorsByName,
+      counterpartIdKey: 'debtorId', counterpartNameKey: 'debtorName',
+      increaseKind: 'lend', decreaseKind: 'collect',
+    },
+  },
+};
+
+let direction = 'owe';
 let tab = 'active';
 
 export function renderHeader(headerEl) {
-  headerEl.innerHTML = pageHeader({ title: 'Quản lý nợ' });
+  headerEl.innerHTML = pageHeader({ title: 'Công nợ' });
 }
 
 export function render(contentEl) {
-  const total = S.totalDebtRemaining();
+  const cfg = DIRECTIONS[direction];
+  const total = cfg.api.total();
   contentEl.innerHTML = `
-    <div class="card card-pad mb-16">
-      <div class="oc-line"><span>Tổng còn nợ</span><b style="color:var(--danger)">${formatVND(total)}</b></div>
-    </div>
-    <div class="mb-16"><button class="btn btn-primary btn-block" id="btn-add">${icon('plus', 'icon-sm')} Ghi nợ mới</button></div>
     <div class="tabs mb-16">
-      <button data-tab="active" class="${tab === 'active' ? 'active' : ''}">Đang nợ</button>
-      <button data-tab="paid" class="${tab === 'paid' ? 'active' : ''}">Đã trả hết</button>
+      ${Object.entries(DIRECTIONS).map(([key, d]) => `<button data-dir="${key}" class="${direction === key ? 'active' : ''}">${d.tabLabel}</button>`).join('')}
     </div>
-    <div id="creditor-list"></div>
+    <div class="card card-pad mb-16">
+      <div class="oc-line"><span>${cfg.totalLabel}</span><b style="color:${cfg.totalColor}">${formatVND(total)}</b></div>
+    </div>
+    <div class="mb-16"><button class="btn btn-primary btn-block" id="btn-add">${icon('plus', 'icon-sm')} ${cfg.addBtnLabel}</button></div>
+    <div class="tabs mb-16">
+      <button data-tab="active" class="${tab === 'active' ? 'active' : ''}">${cfg.statusActiveTab}</button>
+      <button data-tab="paid" class="${tab === 'paid' ? 'active' : ''}">${cfg.statusPaidTab}</button>
+    </div>
+    <div id="counterpart-list"></div>
   `;
-  contentEl.querySelector('#btn-add').addEventListener('click', () => openChargeForm());
+  contentEl.querySelectorAll('[data-dir]').forEach((btn) => {
+    btn.addEventListener('click', () => { direction = btn.dataset.dir; tab = 'active'; render(contentEl); });
+  });
+  contentEl.querySelector('#btn-add').addEventListener('click', () => openIncreaseForm(cfg));
   contentEl.querySelectorAll('[data-tab]').forEach((btn) => {
     btn.addEventListener('click', () => { tab = btn.dataset.tab; render(contentEl); });
   });
-  renderList(contentEl.querySelector('#creditor-list'));
+  renderList(contentEl.querySelector('#counterpart-list'), cfg);
 }
 
-function renderList(listEl) {
-  const creditors = S.listCreditors({ status: tab });
-  listEl.innerHTML = creditors.length
-    ? creditors.map((c) => creditorCardHtml(c)).join('')
+function renderList(listEl, cfg) {
+  const list = cfg.api.list({ status: tab });
+  listEl.innerHTML = list.length
+    ? list.map((c) => counterpartCardHtml(c, cfg)).join('')
     : `<div class="card card-pad">${emptyState({
-        iconName: 'creditCard',
-        title: tab === 'active' ? 'Chưa có khoản nợ nào' : 'Chưa có chủ nợ nào trả hết',
-        message: tab === 'active' ? 'Bấm "Ghi nợ mới" để ghi lại khoản mua/vay nợ theo từng chủ nợ.' : 'Chủ nợ trả hết nợ sẽ chuyển sang đây.',
+        iconName: cfg.listIcon,
+        title: tab === 'active' ? cfg.emptyActive.title : cfg.emptyPaid.title,
+        message: tab === 'active' ? cfg.emptyActive.message : cfg.emptyPaid.message,
       })}</div>`;
-  listEl.querySelectorAll('[data-creditor]').forEach((row) => {
-    row.addEventListener('click', () => openCreditorDetail(row.dataset.creditor));
+  listEl.querySelectorAll('[data-counterpart]').forEach((row) => {
+    row.addEventListener('click', () => openCounterpartDetail(row.dataset.counterpart, cfg));
   });
 }
 
-function creditorCardHtml(c) {
+function counterpartCardHtml(c, cfg) {
   return `
-    <div class="card card-pad mb-16" data-creditor="${c.id}" style="cursor:pointer">
+    <div class="card card-pad mb-16" data-counterpart="${c.id}" style="cursor:pointer">
       <div class="flex items-center justify-between">
         <div class="flex items-center gap-8">
-          <div class="cat-icon" style="background:var(--color-primary)">${icon('creditCard', 'icon-sm')}</div>
+          <div class="cat-icon" style="background:var(--color-primary)">${icon(cfg.listIcon, 'icon-sm')}</div>
           <div>
             <b>${c.name}</b>
             ${c.lastDate ? `<div class="text-sm text-muted">Gần nhất: ${formatDate(c.lastDate)}</div>` : ''}
           </div>
         </div>
         <div style="text-align:right">
-          <div class="fw-700" style="color:${c.balance > 0 ? 'var(--danger)' : 'var(--success)'}">${formatVND(c.balance)}</div>
-          <div class="text-sm text-muted">${c.balance > 0 ? 'còn nợ' : 'đã hết nợ'}</div>
+          <div class="fw-700" style="color:${c.balance > 0 ? cfg.outstandingColor : cfg.settledColor}">${formatVND(c.balance)}</div>
+          <div class="text-sm text-muted">${c.balance > 0 ? cfg.statusActiveLabel : cfg.statusPaidLabel}</div>
         </div>
       </div>
     </div>`;
 }
 
-function openCreditorDetail(creditorId) {
-  const c = S.getCreditor(creditorId);
+function openCounterpartDetail(counterpartId, cfg) {
+  const c = cfg.api.get(counterpartId);
   if (!c) return;
-  const balance = S.creditorBalance(c.id);
-  const entries = S.listDebtEntries(c.id);
+  const balance = cfg.api.balance(c.id);
+  const entries = cfg.api.listEntries(c.id);
   openModal({
     title: c.name,
     bodyHtml: `
-      <div class="oc-line mb-16"><span>Còn nợ</span><b style="color:${balance > 0 ? 'var(--danger)' : 'var(--success)'}">${formatVND(balance)}</b></div>
+      <div class="oc-line mb-16"><span>${balance > 0 ? cfg.statusActiveLabel[0].toUpperCase() + cfg.statusActiveLabel.slice(1) : cfg.statusPaidLabel[0].toUpperCase() + cfg.statusPaidLabel.slice(1)}</span><b style="color:${balance > 0 ? cfg.outstandingColor : cfg.settledColor}">${formatVND(balance)}</b></div>
       ${entries.length ? `
-        <div class="fw-700 text-sm mb-8">Sổ nợ</div>
-        ${entries.map((e) => entryRowHtml(e)).join('')}
-      ` : `<p class="text-sm text-muted">Chưa có dòng nào trong sổ nợ.</p>`}
+        <div class="fw-700 text-sm mb-8">Sổ</div>
+        ${entries.map((e) => entryRowHtml(e, cfg)).join('')}
+      ` : `<p class="text-sm text-muted">Chưa có dòng nào trong sổ.</p>`}
     `,
     footHtml: `
-      <button class="btn btn-primary btn-block" data-charge>${icon('plus', 'icon-sm')} Ghi nợ thêm</button>
-      <button class="btn btn-outline btn-block" data-pay style="margin-top:8px">${icon('check', 'icon-sm')} Trả nợ</button>
-      <button class="btn btn-outline btn-block" data-rename style="margin-top:8px">${icon('edit', 'icon-sm')} Đổi tên chủ nợ</button>
+      <button class="btn btn-primary btn-block" data-increase>${icon('plus', 'icon-sm')} ${cfg.increaseDetailBtn}</button>
+      <button class="btn btn-outline btn-block" data-decrease style="margin-top:8px">${icon('check', 'icon-sm')} ${cfg.decreaseDetailBtn}</button>
+      <button class="btn btn-outline btn-block" data-rename style="margin-top:8px">${icon('edit', 'icon-sm')} ${cfg.renameTitle}</button>
     `,
     onMount(sheet, closeFn) {
-      sheet.querySelector('[data-charge]').addEventListener('click', () => { closeFn(); openChargeForm({ creditorId: c.id, creditorName: c.name }); });
-      sheet.querySelector('[data-pay]').addEventListener('click', () => { closeFn(); openPayModal(c, balance); });
-      sheet.querySelector('[data-rename]').addEventListener('click', () => { closeFn(); openRenameModal(c); });
+      sheet.querySelector('[data-increase]').addEventListener('click', () => { closeFn(); openIncreaseForm(cfg, { counterpartId: c.id, counterpartName: c.name }); });
+      sheet.querySelector('[data-decrease]').addEventListener('click', () => { closeFn(); openDecreaseModal(cfg, c, balance); });
+      sheet.querySelector('[data-rename]').addEventListener('click', () => { closeFn(); openRenameModal(cfg, c); });
       sheet.querySelectorAll('[data-entry]').forEach((row) => {
-        row.addEventListener('click', () => { closeFn(); openEntryActions(entries.find((e) => e.id === row.dataset.entry), c); });
+        row.addEventListener('click', () => { closeFn(); openEntryActions(cfg, entries.find((e) => e.id === row.dataset.entry), c); });
       });
     },
   });
 }
 
-function entryRowHtml(e) {
-  const isCharge = e.kind === 'charge';
+function entryRowHtml(e, cfg) {
+  const isIncrease = e.kind === cfg.api.increaseKind;
+  const icn = isIncrease ? cfg.increaseIcon : cfg.decreaseIcon;
+  const color = isIncrease ? cfg.outstandingColor : cfg.settledColor;
+  const label = isIncrease ? (e.description || cfg.increaseEntryLabel) : (e.description || cfg.decreaseEntryLabel);
   return `
     <div class="list-row" data-entry="${e.id}" style="cursor:pointer">
-      <div class="row-thumb" style="background:${isCharge ? 'var(--danger)' : 'var(--success)'}">${icon(isCharge ? 'cart' : 'check', 'icon-sm')}</div>
+      <div class="row-thumb" style="background:${color}">${icon(icn, 'icon-sm')}</div>
       <div class="row-main">
-        <div class="row-title">${isCharge ? (e.description || 'Ghi nợ') : (e.description || 'Trả nợ')}</div>
-        <div class="row-sub">${formatDate(e.date)}${e.transactionId ? ' · đã tính vào chi tiêu' : ''}</div>
+        <div class="row-title">${label}</div>
+        <div class="row-sub">${formatDate(e.date)}${e.transactionId ? ' · đã tính vào thu/chi' : ''}</div>
       </div>
-      <div class="row-end"><span class="amount" style="color:${isCharge ? 'var(--danger)' : 'var(--success)'}">${isCharge ? '+' : '-'}${formatVND(e.amount)}</span></div>
+      <div class="row-end"><span class="amount" style="color:${color}">${isIncrease ? '+' : '-'}${formatVND(e.amount)}</span></div>
     </div>`;
 }
 
-function openEntryActions(e, c) {
+function openEntryActions(cfg, e, c) {
   if (!e) return;
-  const isCharge = e.kind === 'charge';
+  const isIncrease = e.kind === cfg.api.increaseKind;
   openModal({
-    title: isCharge ? 'Dòng ghi nợ' : 'Dòng trả nợ',
+    title: isIncrease ? cfg.entryDetailIncreaseTitle : cfg.entryDetailDecreaseTitle,
     bodyHtml: `
       <div class="oc-line"><span>Ngày</span><b>${formatDate(e.date)}</b></div>
-      ${e.description ? `<div class="oc-line"><span>${isCharge ? 'Mua gì' : 'Ghi chú'}</span><b>${e.description}</b></div>` : ''}
+      ${e.description ? `<div class="oc-line"><span>${isIncrease ? cfg.entryDescLabel : 'Ghi chú'}</span><b>${e.description}</b></div>` : ''}
       <div class="oc-line"><span>Số tiền</span><b>${formatVND(e.amount)}</b></div>
-      <div class="oc-line"><span>Đưa vào chi tiêu</span><b>${e.transactionId ? 'Có' : 'Không'}</b></div>
-      ${e.transactionId ? `<p class="text-sm text-muted mt-16">Dòng này có kèm 1 giao dịch chi tiêu thật. Sửa/xóa sẽ đồng bộ luôn giao dịch đó.</p>` : ''}
+      <div class="oc-line"><span>Đưa vào thu/chi</span><b>${e.transactionId ? 'Có' : 'Không'}</b></div>
+      ${e.transactionId ? `<p class="text-sm text-muted mt-16">Dòng này có kèm 1 giao dịch thu/chi thật. Sửa/xóa sẽ đồng bộ luôn giao dịch đó.</p>` : ''}
     `,
     footHtml: `
       <button class="btn btn-outline btn-block" data-edit>${icon('edit', 'icon-sm')} Sửa</button>
       <button class="btn btn-danger-outline btn-block" data-del style="margin-top:8px">${icon('trash', 'icon-sm')} Xóa</button>
     `,
     onMount(sheet, closeFn) {
-      sheet.querySelector('[data-edit]').addEventListener('click', () => { closeFn(); openEditEntryForm(e, c); });
+      sheet.querySelector('[data-edit]').addEventListener('click', () => { closeFn(); openEditEntryForm(cfg, e, c); });
       sheet.querySelector('[data-del]').addEventListener('click', () => {
         closeFn();
         confirmDialog({
           title: 'Xóa dòng này?',
-          message: e.transactionId ? 'Giao dịch chi tiêu thật đã tạo kèm dòng này cũng sẽ bị xóa. Không thể hoàn tác.' : 'Không thể hoàn tác.',
+          message: e.transactionId ? 'Giao dịch thu/chi thật đã tạo kèm dòng này cũng sẽ bị xóa. Không thể hoàn tác.' : 'Không thể hoàn tác.',
           confirmLabel: 'Xóa', danger: true,
           onConfirm: async () => {
-            try { await S.deleteDebtEntry(e.id); toast('Đã xóa', 'success'); openCreditorDetail(c.id); }
+            try { await cfg.api.deleteEntry(e.id); toast('Đã xóa', 'success'); openCounterpartDetail(c.id, cfg); }
             catch (err) { toast(err.message || 'Có lỗi xảy ra', 'error'); }
           },
         });
@@ -146,15 +233,17 @@ function openEntryActions(e, c) {
   });
 }
 
-function openEditEntryForm(e, c) {
-  const isCharge = e.kind === 'charge';
+function openEditEntryForm(cfg, e, c) {
+  const isIncrease = e.kind === cfg.api.increaseKind;
+  const txnType = isIncrease ? cfg.increaseTxnType : cfg.decreaseTxnType;
+  const txnLabel = isIncrease ? cfg.increaseTxnLabel : cfg.decreaseTxnLabel;
   openModal({
-    title: isCharge ? 'Sửa ghi nợ' : 'Sửa trả nợ',
+    title: isIncrease ? cfg.entryEditIncreaseTitle : cfg.entryEditDecreaseTitle,
     bodyHtml: `
       <div class="field"><label>Ngày</label><input id="entry-date" type="date" value="${e.date}" required/></div>
-      <div class="field"><label>${isCharge ? 'Mua gì' : 'Ghi chú (không bắt buộc)'}</label><input id="entry-desc" value="${(e.description || '').replace(/"/g, '&quot;')}"/></div>
+      <div class="field"><label>${isIncrease ? cfg.entryDescLabel : 'Ghi chú (không bắt buộc)'}</label><input id="entry-desc" value="${(e.description || '').replace(/"/g, '&quot;')}"/></div>
       <div class="field"><label>Số tiền</label><input id="entry-amount" type="text" inputmode="numeric" value="${formatNumber(e.amount)}" required/></div>
-      ${addToTxnFieldsHtml('entry', !!e.transactionId)}
+      ${addToTxnFieldsHtml('entry', !!e.transactionId, txnType, txnLabel)}
       <div class="field-error" id="entry-error" style="display:none;margin-bottom:10px"></div>
     `,
     footHtml: `<button class="btn btn-primary btn-block" data-save>Lưu thay đổi</button>`,
@@ -169,48 +258,50 @@ function openEditEntryForm(e, c) {
         const categoryId = sheet.querySelector('#entry-cat').value;
         const errEl = sheet.querySelector('#entry-error');
         try {
-          await S.updateDebtEntry(e.id, { amount, date, description, categoryId, addToTransactions });
+          await cfg.api.updateEntry(e.id, { amount, date, description, categoryId, addToTransactions });
           toast('Đã lưu', 'success');
           closeFn();
-          openCreditorDetail(c.id);
+          openCounterpartDetail(c.id, cfg);
         } catch (err) { errEl.textContent = err.message || 'Có lỗi xảy ra'; errEl.style.display = 'block'; }
       });
     },
   });
 }
 
-function openRenameModal(c) {
+function openRenameModal(cfg, c) {
   openModal({
-    title: 'Đổi tên chủ nợ',
+    title: cfg.renameTitle,
     bodyHtml: `
-      <div class="field"><label>Tên chủ nợ</label><input id="creditor-name" value="${c.name.replace(/"/g, '&quot;')}" required/></div>
-      <div class="field"><label>Ghi chú (không bắt buộc)</label><input id="creditor-note" value="${(c.note || '').replace(/"/g, '&quot;')}"/></div>
-      <div class="field-error" id="creditor-error" style="display:none;margin-bottom:10px"></div>
+      <div class="field"><label>${cfg.counterpartLabel}</label><input id="counterpart-name" value="${c.name.replace(/"/g, '&quot;')}" required/></div>
+      <div class="field"><label>Ghi chú (không bắt buộc)</label><input id="counterpart-note" value="${(c.note || '').replace(/"/g, '&quot;')}"/></div>
+      <div class="field-error" id="counterpart-error" style="display:none;margin-bottom:10px"></div>
     `,
     footHtml: `<button class="btn btn-primary btn-block" data-save>Lưu thay đổi</button>`,
     onMount(sheet, closeFn) {
       sheet.querySelector('[data-save]').addEventListener('click', async () => {
-        const name = sheet.querySelector('#creditor-name').value.trim();
-        const note = sheet.querySelector('#creditor-note').value.trim();
-        const errEl = sheet.querySelector('#creditor-error');
+        const name = sheet.querySelector('#counterpart-name').value.trim();
+        const note = sheet.querySelector('#counterpart-note').value.trim();
+        const errEl = sheet.querySelector('#counterpart-error');
         try {
-          await S.updateCreditor(c.id, { name, note });
+          await cfg.api.updateCounterpart(c.id, { name, note });
           toast('Đã lưu', 'success');
           closeFn();
-          openCreditorDetail(c.id);
+          openCounterpartDetail(c.id, cfg);
         } catch (err) { errEl.textContent = err.message || 'Có lỗi xảy ra'; errEl.style.display = 'block'; }
       });
     },
   });
 }
 
-/** Ô "Đưa vào chi tiêu" dùng chung cho form ghi nợ/trả nợ/sửa dòng — mặc định KHÔNG tích, tích vào mới tự tạo giao dịch chi tiêu thật + hiện thêm ô chọn danh mục. idPrefix để tránh trùng id khi nhiều form trên cùng trang. */
-function addToTxnFieldsHtml(idPrefix, checked = false) {
-  const catOptions = `<option value="">Không chọn</option>` + S.listCategories({ type: 'expense' }).map((cat) => `<option value="${cat.id}">${cat.name}</option>`).join('');
+/** Ô "Đưa vào thu/chi" dùng chung cho form ghi tăng/giảm/sửa dòng — mặc định KHÔNG tích, tích vào
+ * mới tự tạo giao dịch thật + hiện thêm ô chọn danh mục (đúng loại thu/chi truyền vào categoryType).
+ * idPrefix để tránh trùng id khi nhiều form trên cùng trang. */
+function addToTxnFieldsHtml(idPrefix, checked, categoryType, label) {
+  const catOptions = `<option value="">Không chọn</option>` + S.listCategories({ type: categoryType }).map((cat) => `<option value="${cat.id}">${cat.name}</option>`).join('');
   return `
     <label class="flex items-center gap-8 mb-16" style="cursor:pointer">
       <input type="checkbox" id="${idPrefix}-add-txn" ${checked ? 'checked' : ''}/>
-      <span class="text-sm">Đưa vào chi tiêu tháng này</span>
+      <span class="text-sm">${label}</span>
     </label>
     <div class="field" id="${idPrefix}-cat-field" style="display:${checked ? '' : 'none'}">
       <label>Danh mục (không bắt buộc)</label><select id="${idPrefix}-cat">${catOptions}</select>
@@ -222,17 +313,17 @@ function bindAddToTxnToggle(sheet, idPrefix) {
   cb.addEventListener('change', () => { field.style.display = cb.checked ? '' : 'none'; });
 }
 
-function openPayModal(c, balance) {
+function openDecreaseModal(cfg, c, balance) {
   openModal({
-    title: `Trả nợ — ${c.name}`,
+    title: cfg.decreaseTitle(c.name),
     bodyHtml: `
-      <p class="text-sm text-muted mb-16">Còn nợ: <b>${formatVND(balance)}</b></p>
-      <div class="field"><label>Số tiền trả</label><input id="pay-amount" type="text" inputmode="numeric" value="${formatNumber(Math.max(0, balance))}"/></div>
-      <div class="field"><label>Ngày trả</label><input id="pay-date" type="date" value="${new Date().toISOString().slice(0, 10)}"/></div>
-      ${addToTxnFieldsHtml('pay')}
+      <p class="text-sm text-muted mb-16">${cfg.statusActiveLabel[0].toUpperCase() + cfg.statusActiveLabel.slice(1)}: <b>${formatVND(balance)}</b></p>
+      <div class="field"><label>${cfg.decreaseAmountLabel}</label><input id="pay-amount" type="text" inputmode="numeric" value="${formatNumber(Math.max(0, balance))}"/></div>
+      <div class="field"><label>${cfg.decreaseDateLabel}</label><input id="pay-date" type="date" value="${new Date().toISOString().slice(0, 10)}"/></div>
+      ${addToTxnFieldsHtml('pay', false, cfg.decreaseTxnType, cfg.decreaseTxnLabel)}
       <div class="field-error" id="pay-error" style="display:none;margin-bottom:10px"></div>
     `,
-    footHtml: `<button class="btn btn-primary btn-block" data-ok>Xác nhận trả nợ</button>`,
+    footHtml: `<button class="btn btn-primary btn-block" data-ok>${cfg.decreaseSubmitLabel}</button>`,
     onMount(sheet, closeFn) {
       attachMoneyInput(sheet.querySelector('#pay-amount'));
       bindAddToTxnToggle(sheet, 'pay');
@@ -243,27 +334,27 @@ function openPayModal(c, balance) {
         const categoryId = sheet.querySelector('#pay-cat').value;
         const errEl = sheet.querySelector('#pay-error');
         try {
-          await S.addDebtPayment(c.id, { amount, date, categoryId, addToTransactions });
-          toast('Đã ghi nhận trả nợ', 'success');
+          await cfg.api.addDecrease(c.id, { amount, date, categoryId, addToTransactions });
+          toast(`Đã ${cfg.decreaseEntryLabel.toLowerCase()}`, 'success');
           closeFn();
-          openCreditorDetail(c.id);
+          openCounterpartDetail(c.id, cfg);
         } catch (err) { errEl.textContent = err.message || 'Có lỗi xảy ra'; errEl.style.display = 'block'; }
       });
     },
   });
 }
 
-/** Gợi ý tên chủ nợ đã dùng qua (kể cả đã "đã trả hết" — vẫn giữ tên để chọn lại lần sau), chỉ hiện
- * TÊN cho gọn, không hiện số tiền. CHỈ xổ ra khi bấm nút mũi tên bên cạnh (không tự bung lúc gõ, đỡ
- * dài dòng) — gõ tên mới hoàn toàn thì cứ gõ, không cần bấm gì. */
-function bindCreditorNameSuggestions(sheet, inputId, listId, toggleId) {
+/** Gợi ý tên đã dùng qua (kể cả đã "đã trả hết" — vẫn giữ tên để chọn lại lần sau), chỉ hiện TÊN cho
+ * gọn, không hiện số tiền. CHỈ xổ ra khi bấm nút mũi tên bên cạnh (không tự bung lúc gõ, đỡ dài
+ * dòng) — gõ tên mới hoàn toàn thì cứ gõ, không cần bấm gì. */
+function bindCounterpartNameSuggestions(cfg, sheet, inputId, listId, toggleId) {
   const input = sheet.querySelector(`#${inputId}`);
   const list = sheet.querySelector(`#${listId}`);
   const toggle = sheet.querySelector(`#${toggleId}`);
   function render() {
-    // Đọc lại S.listCreditorNames() mỗi lần render (không lưu 1 lần) để danh sách cập nhật ngay
-    // sau khi xóa 1 tên, không cần đóng/mở lại.
-    const allNames = S.listCreditorNames();
+    // Đọc lại cfg.api.listNames() mỗi lần render (không lưu 1 lần) để danh sách cập nhật ngay sau
+    // khi xóa 1 tên, không cần đóng/mở lại.
+    const allNames = cfg.api.listNames();
     const q = input.value.trim().toLowerCase();
     const matches = q ? allNames.filter((n) => n.toLowerCase().includes(q) && n.toLowerCase() !== q) : allNames;
     list.innerHTML = matches.length
@@ -288,15 +379,15 @@ function bindCreditorNameSuggestions(sheet, inputId, listId, toggleId) {
     const delBtn = e.target.closest('[data-del-name]');
     if (delBtn) {
       const name = delBtn.dataset.delName;
-      const matches = S.listCreditors().filter((c) => c.name.trim().toLowerCase() === name.trim().toLowerCase());
+      const matches = cfg.api.list().filter((c) => c.name.trim().toLowerCase() === name.trim().toLowerCase());
       const owing = matches.filter((c) => c.balance > 0).reduce((s, c) => s + c.balance, 0);
-      const warn = owing > 0 ? ` Trong đó có sổ đang còn nợ ${formatVND(owing)} — xóa sẽ MẤT LUÔN sổ đang mở này.` : '';
+      const warn = owing > 0 ? ` Trong đó có sổ đang ${cfg.statusActiveLabel} ${formatVND(owing)} — xóa sẽ MẤT LUÔN sổ đang mở này.` : '';
       confirmDialog({
-        title: 'Xóa tên chủ nợ này?',
-        message: `Xóa toàn bộ lịch sử/sổ nợ mang tên "${name}" khỏi gợi ý.${warn} Các giao dịch chi tiêu đã ghi khi trả nợ trước đó vẫn được giữ nguyên. Không thể hoàn tác.`,
+        title: `Xóa tên ${cfg.counterpartLabel.toLowerCase()} này?`,
+        message: cfg.deleteNameConfirm(name, warn),
         confirmLabel: 'Xóa', danger: true,
         onConfirm: async () => {
-          try { await S.deleteCreditorsByName(name); toast('Đã xóa tên chủ nợ', 'success'); render(); }
+          try { await cfg.api.deleteByName(name); toast(`Đã xóa tên ${cfg.counterpartLabel.toLowerCase()}`, 'success'); render(); }
           catch (err) { toast(err.message || 'Có lỗi xảy ra', 'error'); }
         },
       });
@@ -309,46 +400,51 @@ function bindCreditorNameSuggestions(sheet, inputId, listId, toggleId) {
   });
 }
 
-function openChargeForm({ creditorId, creditorName } = {}) {
-  const locked = !!creditorId;
+function openIncreaseForm(cfg, { counterpartId, counterpartName } = {}) {
+  const locked = !!counterpartId;
   openModal({
-    title: 'Ghi nợ mới',
+    title: cfg.increaseModalTitle,
     bodyHtml: `
       <div class="field" style="position:relative">
-        <label>Chủ nợ</label>
+        <label>${cfg.counterpartLabel}</label>
         ${locked
-          ? `<input id="charge-creditor-name" value="${creditorName.replace(/"/g, '&quot;')}" readonly/>`
+          ? `<input id="incr-counterpart-name" value="${counterpartName.replace(/"/g, '&quot;')}" readonly/>`
           : `<div class="flex items-center gap-8">
-              <input id="charge-creditor-name" placeholder="VD: Tạp hóa A" autocomplete="off" style="flex:1"/>
-              <button type="button" class="icon-btn" id="charge-creditor-toggle" aria-label="Chọn tên đã dùng">${icon('chevronDown', 'icon-sm')}</button>
+              <input id="incr-counterpart-name" placeholder="${cfg.counterpartPlaceholder}" autocomplete="off" style="flex:1"/>
+              <button type="button" class="icon-btn" id="incr-counterpart-toggle" aria-label="Chọn tên đã dùng">${icon('chevronDown', 'icon-sm')}</button>
             </div>
-            <div id="charge-creditor-list" style="display:none;position:absolute;left:0;right:0;z-index:5;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-top:4px;max-height:160px;overflow-y:auto"></div>`}
+            <div id="incr-counterpart-list" style="display:none;position:absolute;left:0;right:0;z-index:5;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-top:4px;max-height:160px;overflow-y:auto"></div>`}
       </div>
-      <div class="field"><label>Ngày mua nợ</label><input id="charge-date" type="date" value="${new Date().toISOString().slice(0, 10)}" required/></div>
-      <div class="field"><label>Mua gì (không bắt buộc)</label><input id="charge-desc" placeholder="VD: gạo, mắm, dầu ăn"/></div>
-      <div class="field"><label>Số tiền nợ</label><input id="charge-amount" type="text" inputmode="numeric" required/></div>
-      ${addToTxnFieldsHtml('charge')}
-      <div class="field-error" id="charge-error" style="display:none;margin-bottom:10px"></div>
+      <div class="field"><label>${cfg.increaseDateLabel}</label><input id="incr-date" type="date" value="${new Date().toISOString().slice(0, 10)}" required/></div>
+      <div class="field"><label>${cfg.increaseDescLabel}</label><input id="incr-desc" placeholder="${cfg.increaseDescPlaceholder}"/></div>
+      <div class="field"><label>${cfg.increaseAmountLabel}</label><input id="incr-amount" type="text" inputmode="numeric" required/></div>
+      ${addToTxnFieldsHtml('incr', false, cfg.increaseTxnType, cfg.increaseTxnLabel)}
+      <div class="field-error" id="incr-error" style="display:none;margin-bottom:10px"></div>
     `,
-    footHtml: `<button class="btn btn-primary btn-block" data-save>Ghi nợ</button>`,
+    footHtml: `<button class="btn btn-primary btn-block" data-save>${cfg.increaseSubmitLabel}</button>`,
     onMount(sheet, closeFn) {
-      attachMoneyInput(sheet.querySelector('#charge-amount'));
-      bindAddToTxnToggle(sheet, 'charge');
-      if (!locked) bindCreditorNameSuggestions(sheet, 'charge-creditor-name', 'charge-creditor-list', 'charge-creditor-toggle');
+      attachMoneyInput(sheet.querySelector('#incr-amount'));
+      bindAddToTxnToggle(sheet, 'incr');
+      if (!locked) bindCounterpartNameSuggestions(cfg, sheet, 'incr-counterpart-name', 'incr-counterpart-list', 'incr-counterpart-toggle');
       sheet.querySelector('[data-save]').addEventListener('click', async () => {
-        const creditorNameVal = locked ? creditorName : sheet.querySelector('#charge-creditor-name').value.trim();
-        const date = sheet.querySelector('#charge-date').value;
-        const description = sheet.querySelector('#charge-desc').value.trim();
-        const amount = unformatMoney(sheet.querySelector('#charge-amount').value);
-        const addToTransactions = sheet.querySelector('#charge-add-txn').checked;
-        const categoryId = sheet.querySelector('#charge-cat').value;
-        const errEl = sheet.querySelector('#charge-error');
-        if (!creditorNameVal) { errEl.textContent = 'Cần nhập tên chủ nợ.'; errEl.style.display = 'block'; return; }
+        const nameVal = locked ? counterpartName : sheet.querySelector('#incr-counterpart-name').value.trim();
+        const date = sheet.querySelector('#incr-date').value;
+        const description = sheet.querySelector('#incr-desc').value.trim();
+        const amount = unformatMoney(sheet.querySelector('#incr-amount').value);
+        const addToTransactions = sheet.querySelector('#incr-add-txn').checked;
+        const categoryId = sheet.querySelector('#incr-cat').value;
+        const errEl = sheet.querySelector('#incr-error');
+        if (!nameVal) { errEl.textContent = `Cần nhập tên ${cfg.counterpartLabel.toLowerCase()}.`; errEl.style.display = 'block'; return; }
+        const payload = {
+          [cfg.api.counterpartIdKey]: locked ? counterpartId : undefined,
+          [cfg.api.counterpartNameKey]: locked ? undefined : nameVal,
+          amount, date, description, categoryId, addToTransactions,
+        };
         try {
-          await S.addDebtCharge({ creditorId: locked ? creditorId : undefined, creditorName: locked ? undefined : creditorNameVal, amount, date, description, categoryId, addToTransactions });
-          toast('Đã ghi nợ', 'success');
+          await cfg.api.addIncrease(payload);
+          toast(`Đã ${cfg.increaseSubmitLabel.toLowerCase()}`, 'success');
           closeFn();
-          if (locked) openCreditorDetail(creditorId);
+          if (locked) openCounterpartDetail(counterpartId, cfg);
         } catch (err) { errEl.textContent = err.message || 'Có lỗi xảy ra'; errEl.style.display = 'block'; }
       });
     },

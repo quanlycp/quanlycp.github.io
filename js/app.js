@@ -1,5 +1,5 @@
 import * as S from './state.js';
-import { buildShell, updateActiveNav } from './components/shell.js';
+import { buildShell, updateActiveNav, updateNavBadges } from './components/shell.js';
 import { closeAllModals } from './components/modal.js';
 import { renderLogin } from './views/login.js';
 import { renderChangePassword } from './views/changePassword.js';
@@ -12,6 +12,7 @@ import * as Recurring from './views/recurring.js';
 import * as Plans from './views/plans.js';
 import * as Debts from './views/debts.js';
 import * as Savings from './views/savings.js';
+import * as Notifications from './views/notifications.js';
 import * as Users from './views/users.js';
 import * as Settings from './views/settings.js';
 import * as ChangePasswordSelf from './views/changePasswordSelf.js';
@@ -25,6 +26,7 @@ const ROUTES = [
   { re: /^#\/ke-hoach$/, view: Plans },
   { re: /^#\/no$/, view: Debts },
   { re: /^#\/tiet-kiem$/, view: Savings },
+  { re: /^#\/thong-bao$/, view: Notifications },
   { re: /^#\/nguoi-dung$/, view: Users, ownerOnly: true },
   { re: /^#\/cai-dat$/, view: Settings, ownerOnly: true },
   { re: /^#\/doi-mat-khau$/, view: ChangePasswordSelf },
@@ -88,6 +90,7 @@ function renderApp({ scrollTop = true } = {}) {
   if (match.view.renderHeader) match.view.renderHeader(headerEl);
   match.view.render(contentEl, filterEl, query);
   updateActiveNav(path);
+  updateNavBadges({ '#/thong-bao': S.unreadInboxCount() });
 }
 
 window.addEventListener('hashchange', () => { closeAllModals(); renderApp(); });
