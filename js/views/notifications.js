@@ -99,7 +99,7 @@ function renderList(listEl) {
           <div class="row-title" style="font-weight:${n.read ? 500 : 700}">${escapeTitle(n.title)}</div>
           <div class="row-sub">${senderLabel(n)} · ${formatDateTime(n.sentAt || n.createdAt)}</div>
         </div>
-        ${!n.read ? '<div class="row-end"><span class="nav-badge">Mới</span></div>' : ''}
+        ${!n.read ? '<div class="row-end"><span class="badge badge-red">Mới</span></div>' : ''}
       </div>`).join('') : `<div class="card card-pad">${emptyState({ iconName: 'bell', title: 'Hộp thư trống', message: 'Thông báo người khác gửi cho bạn (hoặc gửi cho tất cả mọi người) sẽ hiện ở đây.' })}</div>`;
     listEl.querySelectorAll('[data-open]').forEach((row) => {
       row.addEventListener('click', () => openDetail(row.dataset.open));

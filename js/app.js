@@ -1,5 +1,5 @@
 import * as S from './state.js';
-import { buildShell, updateActiveNav, updateNavBadges } from './components/shell.js';
+import { buildShell, updateActiveNav } from './components/shell.js';
 import { closeAllModals } from './components/modal.js';
 import { renderLogin } from './views/login.js';
 import { renderChangePassword } from './views/changePassword.js';
@@ -90,7 +90,6 @@ function renderApp({ scrollTop = true } = {}) {
   if (match.view.renderHeader) match.view.renderHeader(headerEl);
   match.view.render(contentEl, filterEl, query);
   updateActiveNav(path);
-  updateNavBadges({ '#/thong-bao': S.unreadInboxCount() });
 }
 
 window.addEventListener('hashchange', () => { closeAllModals(); renderApp(); });
