@@ -2,10 +2,9 @@
 // thiết bị/trình duyệt là 1 thuê bao (endpoint) riêng, lưu vào bảng
 // push_subscriptions qua state.js (xem docs/expense-app-setup.md mục 10).
 //
-// *** CẦN ĐIỀN LẠI VAPID_PUBLIC_KEY dưới đây sau khi chạy
-// `node scripts/generate-vapid-keys.js` — giá trị này AN TOÀN để công khai,
-// giống anon key (bảo mật thật nằm ở khóa RIÊNG chỉ Edge Function giữ). ***
-export const VAPID_PUBLIC_KEY = '';
+// Giá trị này AN TOÀN để công khai (giống anon key) — bảo mật thật nằm ở
+// VAPID_PRIVATE_KEY, chỉ đặt làm Secret trên Edge Function, xem mục 10.3.
+export const VAPID_PUBLIC_KEY = 'BP-OmC6JRrfRGTdfn8-FcajBm8ct0Kbho-0I-1hE2wYwWWvsk63pNXyo5ajYstroCzbsS_jJx7HyTZFnb42-fDM';
 
 function urlBase64ToUint8Array(base64url) {
   const padded = base64url.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (base64url.length % 4)) % 4);
