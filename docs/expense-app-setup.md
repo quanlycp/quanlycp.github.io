@@ -421,9 +421,8 @@ In ra 2 giá trị `VAPID_PUBLIC_KEY` và `VAPID_PRIVATE_KEY` — giữ lại c�
 
 ### 10.3 Deploy lại Edge Function + thêm Secrets
 
-1. Copy lại toàn bộ nội dung MỚI của `supabase/functions/create-account/index.ts` **VÀ**
-   `supabase/functions/create-account/webpush.ts` (function này giờ có 2 file) → dán đè vào Edge
-   Function đã tạo ở mục 4 → **Deploy** lại.
+1. Copy lại toàn bộ nội dung MỚI của `supabase/functions/create-account/index.ts` (vẫn ĐÚNG 1 FILE
+   như trước, không cần tạo thêm file nào) → dán đè vào Edge Function đã tạo ở mục 4 → **Deploy** lại.
 2. Vào **Edge Functions → Secrets**, thêm 4 secrets mới:
    - `VAPID_PUBLIC_KEY` — dán giá trị lấy được ở bước 10.2.
    - `VAPID_PRIVATE_KEY` — dán giá trị lấy được ở bước 10.2 (secret, không lộ ra ngoài).
