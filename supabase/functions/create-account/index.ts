@@ -42,7 +42,9 @@ const CRON_SECRET_KEY = Deno.env.get('CRON_SECRET_KEY') || '';
 
 const LOCK_AFTER_FAILS = 5;
 const LOCK_MINUTES = 15;
-const SESSION_HOURS = 12;
+// App gia đình/cá nhân, không cần bắt đăng nhập lại thường xuyên như app ngân hàng -> để phiên
+// sống rất lâu (10 năm, coi như không hết hạn trong thực tế) thay vì 12 tiếng như trước.
+const SESSION_HOURS = 24 * 365 * 10;
 
 const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
 

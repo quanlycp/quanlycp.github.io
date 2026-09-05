@@ -67,11 +67,12 @@ export async function refresh() {
   await loadSettingsPublic();
   if (state.session?.sbToken) {
     if (isTokenExpired(state.session.sbToken)) {
-      // Phiên cũ (lưu trong localStorage từ trước, VD mở lại app sau >12 tiếng) đã hết hạn — cứ
-      // âm thầm gọi Supabase với token hết hạn thì Row Level Security sẽ lọc MỌI bảng về RỖNG (0
-      // dòng) mà KHÔNG báo lỗi gì cả, trông y hệt "mất hết dữ liệu" dù dữ liệu vẫn còn nguyên.
-      // Chủ động phát hiện ở đây, đăng xuất luôn để bắt đăng nhập lại lấy phiên mới cho chắc chắn,
-      // thay vì để người dùng hoang mang tưởng bị xóa dữ liệu.
+      // Phiên hiện sống rất lâu (xem SESSION_HOURS trong Edge Function) nên hiếm khi hết hạn thật,
+      // nhưng vẫn có thể xảy ra (VD phiên đăng nhập từ TRƯỚC khi đổi sang thời hạn dài, hoặc chủ sổ
+      // cấp lại mật khẩu ở thiết bị khác làm mất hiệu lực). Nếu để vậy gọi Supabase với token hết
+      // hạn, Row Level Security sẽ âm thầm lọc MỌI bảng về RỖNG (0 dòng) mà KHÔNG báo lỗi gì cả,
+      // trông y hệt "mất hết dữ liệu" dù dữ liệu vẫn còn nguyên. Chủ động phát hiện ở đây, đăng
+      // xuất luôn để bắt đăng nhập lại lấy phiên mới, thay vì để người dùng hoang mang.
       sessionExpiredNotice = true;
       logout();
       return;
