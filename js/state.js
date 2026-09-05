@@ -66,11 +66,44 @@ export async function init() {
 export async function refresh() {
   await loadSettingsPublic();
   if (state.session?.sbToken) {
+    if (isTokenExpired(state.session.sbToken)) {
+      // Phiên cũ (lưu trong localStorage từ trước, VD mở lại app sau >12 tiếng) đã hết hạn — cứ
+      // âm thầm gọi Supabase với token hết hạn thì Row Level Security sẽ lọc MỌI bảng về RỖNG (0
+      // dòng) mà KHÔNG báo lỗi gì cả, trông y hệt "mất hết dữ liệu" dù dữ liệu vẫn còn nguyên.
+      // Chủ động phát hiện ở đây, đăng xuất luôn để bắt đăng nhập lại lấy phiên mới cho chắc chắn,
+      // thay vì để người dùng hoang mang tưởng bị xóa dữ liệu.
+      sessionExpiredNotice = true;
+      logout();
+      return;
+    }
     try { await loadSessionData(state.session.sbToken); }
     catch (e) { console.warn('Không tải lại được dữ liệu phiên cũ.', e); }
   }
   persist();
   notify();
+}
+
+/** Đọc claim "exp" (Unix giây) trong JWT tự ký ở Edge Function mà KHÔNG cần xác minh chữ ký (chỉ để
+ * quyết định có nên chủ động đăng xuất sớm hay không — chữ ký thật đã được server xác minh mỗi lần
+ * gọi API, đây chỉ là kiểm tra hạn dùng phía trình duyệt). Đọc lỗi/thiếu "exp" -> coi như đã hết hạn. */
+function isTokenExpired(token) {
+  try {
+    const payloadB64 = token.split('.')[1];
+    const padded = payloadB64.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (payloadB64.length % 4)) % 4);
+    const payload = JSON.parse(atob(padded));
+    return !payload.exp || payload.exp < Math.floor(Date.now() / 1000);
+  } catch (e) {
+    return true;
+  }
+}
+
+// Cờ tạm (KHÔNG lưu localStorage, chỉ tồn tại trong phiên chạy này) để màn đăng nhập biết mà báo lý
+// do bị đưa về đây — dùng consumeSessionExpiredNotice() để đọc rồi tự xóa (chỉ báo đúng 1 lần).
+let sessionExpiredNotice = false;
+export function consumeSessionExpiredNotice() {
+  const v = sessionExpiredNotice;
+  sessionExpiredNotice = false;
+  return v;
 }
 
 async function loadSettingsPublic() {

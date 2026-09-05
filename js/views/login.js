@@ -27,6 +27,12 @@ export function renderLogin(root, onLoggedIn) {
     </div>
   `;
 
+  // Bị chủ động đăng xuất do phiên cũ hết hạn (xem state.js refresh()) -> báo rõ lý do, kẻo người
+  // dùng tưởng nhầm là mất dữ liệu khi thấy màn đăng nhập hiện ra bất ngờ.
+  if (S.consumeSessionExpiredNotice()) {
+    toast('Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.', 'error');
+  }
+
   root.querySelector('#login-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
