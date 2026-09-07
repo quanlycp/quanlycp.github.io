@@ -656,10 +656,11 @@ export async function completePlan(id, { amount, date } = {}) {
 // ngày nào, nợ bao nhiêu) và "payment" (trả nợ — ngày nào, trả bao nhiêu).
 // Còn nợ = tổng charge - tổng payment, tính ngay lúc đọc (không lưu cột
 // riêng để khỏi lệch). MẶC ĐỊNH ghi nợ/trả nợ đều KHÔNG đụng tới thu/chi
-// thật — chỉ khi người dùng tự TÍCH CHỌN "đưa vào chi tiêu" lúc ghi/sửa mới
-// tự tạo (hoặc đồng bộ) 1 giao dịch chi tiêu thật, liên kết qua
-// transactionId. Riêng tư từng người dùng (RLS lọc theo user_id), KHÔNG
-// hiện trên Tổng quan.
+// thật — chỉ khi người dùng tự TÍCH CHỌN "đưa vào thu/chi" lúc ghi/sửa mới
+// tự tạo (hoặc đồng bộ) 1 giao dịch thật, liên kết qua transactionId. Ghi
+// nợ (vay/mua chịu) = tiền/hàng VỀ TAY mình -> giao dịch THU; trả nợ = tiền
+// THẬT SỰ rời túi -> giao dịch CHI (ngược pha nhau). Riêng tư từng người
+// dùng (RLS lọc theo user_id), KHÔNG hiện trên Tổng quan.
 // ------------------------------------------------------------
 function entriesOf(creditorId) { return state.debtEntries.filter((e) => e.creditorId === creditorId); }
 /** Còn nợ của 1 chủ nợ = tổng ghi nợ - tổng đã trả. */
@@ -716,8 +717,9 @@ async function ensureCreditor(name, sb, session) {
 /** Ghi nợ mới. Truyền creditorId khi đã biết đúng chủ nợ (VD đang ở trang chi tiết 1 chủ nợ) — dùng
  * đúng sổ đó dù đang nợ hay đã trả hết. Truyền creditorName để tự tìm chủ nợ CÒN ĐANG NỢ theo tên
  * (không phân biệt hoa/thường); nếu chưa có ai đang nợ tên đó thì tự mở 1 sổ nợ MỚI (không chồng vào
- * sổ cũ đã trả hết, kể cả trùng tên). Mặc định KHÔNG đụng thu/chi thật; chỉ tạo giao dịch chi khi
- * addToTransactions=true (người dùng tự tích chọn). */
+ * sổ cũ đã trả hết, kể cả trùng tên). Mặc định KHÔNG đụng thu/chi thật; chỉ tạo giao dịch THU khi
+ * addToTransactions=true (người dùng tự tích chọn) — lúc vay/mua nợ là lúc tiền/hàng VỀ TAY mình,
+ * ngược lại với lúc trả nợ (addDebtPayment bên dưới) mới là lúc tiền THẬT SỰ rời túi (chi). */
 export async function addDebtCharge({ creditorId, creditorName, amount, date, description, categoryId, addToTransactions }) {
   const session = getSession();
   const sb = getSupabaseClient(session?.sbToken);
@@ -737,7 +739,7 @@ export async function addDebtCharge({ creditorId, creditorName, amount, date, de
   let txnRow = null;
   if (addToTransactions) {
     txnRow = {
-      id: genId('txn'), type: 'expense', amount: chargeAmount, category_id: categoryId || null,
+      id: genId('txn'), type: 'income', amount: chargeAmount, category_id: categoryId || null,
       note: `Mua nợ: ${creditor.name}${description ? ' - ' + description : ''}`, txn_date: entryDate, user_id: session.id, recurring_id: null,
     };
     const { error: txnErr } = await sb.from('transactions').insert(txnRow);
@@ -784,7 +786,8 @@ export async function addDebtPayment(creditorId, { amount, date, categoryId, des
   state.debtEntries.unshift(mapDebtEntryRow({ ...row, created_at: new Date().toISOString() }));
   notify();
 }
-/** Sửa 1 dòng ghi nợ/trả nợ. addToTransactions điều khiển việc tạo/xóa/đồng bộ giao dịch chi tiêu thật đi kèm (nếu có). */
+/** Sửa 1 dòng ghi nợ/trả nợ. addToTransactions điều khiển việc tạo/xóa/đồng bộ giao dịch thu/chi thật
+ * đi kèm (nếu có) — loại giao dịch tự suy ra từ kind (charge=thu, payment=chi, xem addDebtCharge). */
 export async function updateDebtEntry(id, { amount, date, description, categoryId, addToTransactions }) {
   const e = state.debtEntries.find((x) => x.id === id);
   if (!e) throw new Error('Không tìm thấy dòng sổ nợ.');
@@ -795,13 +798,14 @@ export async function updateDebtEntry(id, { amount, date, description, categoryI
   if (newAmount <= 0) throw new Error('Số tiền phải lớn hơn 0.');
   const newDate = date || e.date;
   const patch = { amount: newAmount, entry_date: newDate, description: description || '' };
+  const txnType = e.kind === 'charge' ? 'income' : 'expense';
 
   let newTransactionId = e.transactionId;
   if (addToTransactions && !e.transactionId) {
-    // Trước đây chưa đưa vào chi tiêu, giờ tích chọn -> tạo mới giao dịch.
+    // Trước đây chưa đưa vào thu/chi, giờ tích chọn -> tạo mới giao dịch.
     const note = e.kind === 'charge' ? `Mua nợ: ${creditor ? creditor.name : ''}${patch.description ? ' - ' + patch.description : ''}` : `Trả nợ: ${creditor ? creditor.name : ''}`;
     const txnRow = {
-      id: genId('txn'), type: 'expense', amount: newAmount, category_id: categoryId || null,
+      id: genId('txn'), type: txnType, amount: newAmount, category_id: categoryId || null,
       note, txn_date: newDate, user_id: session.id, recurring_id: null,
     };
     const { error: txnErr } = await sb.from('transactions').insert(txnRow);
@@ -809,12 +813,12 @@ export async function updateDebtEntry(id, { amount, date, description, categoryI
     state.transactions.unshift(mapTransactionRow({ ...txnRow, created_at: new Date().toISOString() }));
     newTransactionId = txnRow.id;
   } else if (!addToTransactions && e.transactionId) {
-    // Trước đây có đưa vào chi tiêu, giờ bỏ tích -> xóa giao dịch đã tạo.
+    // Trước đây có đưa vào thu/chi, giờ bỏ tích -> xóa giao dịch đã tạo.
     await sb.from('transactions').delete().eq('id', e.transactionId);
     state.transactions = state.transactions.filter((t) => t.id !== e.transactionId);
     newTransactionId = null;
   } else if (addToTransactions && e.transactionId) {
-    // Vẫn đưa vào chi tiêu -> đồng bộ số tiền/ngày cho giao dịch đã có.
+    // Vẫn đưa vào thu/chi -> đồng bộ số tiền/ngày cho giao dịch đã có.
     const { error: txnErr } = await sb.from('transactions').update({ amount: newAmount, txn_date: newDate }).eq('id', e.transactionId);
     if (txnErr) throw new Error('Đã cập nhật sổ nợ nhưng chưa đồng bộ được giao dịch, thử lại sau.');
     const t = state.transactions.find((x) => x.id === e.transactionId);

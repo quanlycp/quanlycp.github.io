@@ -27,7 +27,7 @@ const DIRECTIONS = {
     increaseModalTitle: 'Ghi nợ mới', increaseDetailBtn: 'Ghi nợ thêm',
     increaseDateLabel: 'Ngày mua nợ', increaseDescLabel: 'Mua gì (không bắt buộc)', increaseDescPlaceholder: 'VD: gạo, mắm, dầu ăn',
     increaseAmountLabel: 'Số tiền nợ', increaseSubmitLabel: 'Ghi nợ',
-    increaseTxnLabel: 'Đưa vào chi tiêu tháng này', increaseTxnType: 'expense',
+    increaseTxnLabel: 'Tính là 1 khoản thu nhập (tiền/hàng thật về tay)', increaseTxnType: 'income',
     increaseEntryLabel: 'Ghi nợ', increaseIcon: 'cart',
     decreaseTitle: (name) => `Trả nợ — ${name}`, decreaseDetailBtn: 'Trả nợ',
     decreaseAmountLabel: 'Số tiền trả', decreaseDateLabel: 'Ngày trả', decreaseSubmitLabel: 'Xác nhận trả nợ',
