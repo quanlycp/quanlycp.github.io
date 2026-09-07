@@ -10,7 +10,12 @@ import { formatVND, formatDate, debounce } from '../utils.js';
 // filters.month: 'YYYY-MM' hoặc '' (Tất cả). Mọi giao dịch được lưu vĩnh viễn theo đúng ngày thật
 // (không tự xóa/gộp/chốt sổ gì cả) nên chọn lại bất kỳ tháng nào trong quá khứ luôn ra đúng dữ liệu
 // gốc — không cần thêm cơ chế "lưu định kỳ đầu tháng" nào khác.
-let filters = { type: '', categoryId: '', userId: '', q: '', month: '' };
+function currentMonthValue() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+// Mặc định mở trang là đúng THÁNG HIỆN TẠI (không để trống) — muốn xem tất cả các tháng thì bấm "x" bỏ lọc.
+let filters = { type: '', categoryId: '', userId: '', q: '', month: currentMonthValue() };
 
 export function renderHeader(headerEl) {
   headerEl.innerHTML = pageHeader({ title: 'Giao dịch' });
