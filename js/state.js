@@ -492,7 +492,7 @@ export async function updateTransaction(id, { type, amount, categoryId, note, da
     linked.entry.amount = newAmount;
     linked.entry.date = date;
     if (linked.type === 'debt' && linked.entry.mirrorEntryId) {
-      await mirrorDebtUpdate(linked.entry.mirrorEntryId, { amount: newAmount, date, description: linked.entry.description }, session?.sbToken);
+      await mirrorDebtUpdate(linked.entry.mirrorEntryId, { amount: newAmount, date, debtKind: linked.entry.kind }, session?.sbToken);
     }
   }
   notify();
@@ -843,31 +843,43 @@ async function ensureCreditor(name, sb, session, { shared = false, memberUserId 
   state.creditors.push(c);
   return c;
 }
+// Khoản Nợ chung là của CẢ NHÀ, không thuộc về riêng ai — dòng mirror bên sổ riêng "Người khác nợ
+// tôi" của thành viên vì vậy LUÔN đứng tên "Quỹ chung mượn" (không phải tên người vừa thao tác, vì
+// người ghi hộ giao dịch không nhất thiết là người thật sự "mượn"), và mô tả cố định theo đúng
+// chiều tăng/giảm nợ — không dùng mô tả tự do người dùng gõ ở Nợ chung (có thể trống/không phù hợp
+// khi hiện sang sổ của người khác).
+const MIRROR_DEBTOR_NAME = 'Quỹ chung mượn';
+function mirrorEntryDescription(debtEntryKind) {
+  return debtEntryKind === 'charge' ? 'Quỹ mượn nợ' : 'Quỹ trả nợ';
+}
 /** Mượn nợ 1 THÀNH VIÊN trong sổ (memberUserId) -> tự "điền hộ" luôn vào sổ "Người khác nợ tôi"
- * RIÊNG TƯ của đúng thành viên đó (kind='lend'), khỏi phải tự gõ tay lại 2 lần — kể cả khi thành
- * viên đó CHÍNH LÀ người đang đăng nhập (không loại trừ bản thân), vì "use" trong danh sách chọn
- * luôn có cả chính mình (xem borrowFieldsHtml() ở txnForm.js). Trả nợ cho chủ nợ là 1 thành viên
- * (memberUserId đã có mirrorDebtorId từ lần mượn trước) cũng tự thêm dòng "collect" tương ứng để
- * trừ nợ bên sổ riêng của họ luôn — 2 sổ (Nợ chung + sổ riêng của thành viên) LUÔN khớp nhau, không
- * cần nhập tay từng cái. Ghi vào bảng RIÊNG TƯ của NGƯỜI KHÁC (hoặc CHÍNH MÌNH) nên RLS chặn viết
- * trực tiếp — phải nhờ Edge Function (service_role) làm hộ, xem type 'debt-mirror-add' ở
+ * RIÊNG TƯ của đúng thành viên đó, khỏi phải tự gõ tay lại 2 lần — kể cả khi thành viên đó CHÍNH LÀ
+ * người đang đăng nhập (không loại trừ bản thân), vì "use" trong danh sách chọn luôn có cả chính
+ * mình (xem borrowFieldsHtml() ở txnForm.js). Trả nợ cho chủ nợ là 1 thành viên (memberUserId đã có
+ * mirrorDebtorId từ lần mượn trước) cũng tự thêm dòng "collect" tương ứng để trừ nợ bên sổ riêng
+ * của họ luôn — 2 sổ (Nợ chung + sổ riêng của thành viên) LUÔN khớp nhau, không cần nhập tay từng
+ * cái. Ghi vào bảng RIÊNG TƯ của NGƯỜI KHÁC (hoặc CHÍNH MÌNH) nên RLS chặn viết trực tiếp — phải
+ * nhờ Edge Function (service_role) làm hộ, xem type 'debt-mirror-add' ở
  * supabase/functions/create-account/index.ts. LUÔN "best effort": mirror lỗi chỉ console.warn, sổ
- * Nợ chung (nguồn dữ liệu chính) vẫn đúng dù mirror thất bại. */
-async function mirrorDebtAdd(creditor, { kind, amount, date, description, borrowerName, sbToken }) {
+ * Nợ chung (nguồn dữ liệu chính) vẫn đúng dù mirror thất bại. `debtKind` là kind bên debt_entries
+ * ('charge'/'payment') — tự suy ra kind bên receivable_entries ('lend'/'collect') + mô tả cố định. */
+async function mirrorDebtAdd(creditor, { debtKind, amount, date, sbToken }) {
   if (!creditor.memberUserId) return null;
   try {
     const res = await callAccountFunction(sbToken, {
       type: 'debt-mirror-add', memberUserId: creditor.memberUserId, debtorId: creditor.mirrorDebtorId,
-      name: borrowerName, kind, amount, date, description,
+      name: MIRROR_DEBTOR_NAME, kind: debtKind === 'charge' ? 'lend' : 'collect', amount, date,
+      description: mirrorEntryDescription(debtKind),
     });
     if (!res.ok) console.warn('mirrorDebtAdd không thành công:', res.reason);
     return res.ok ? { debtorId: res.debtorId, entryId: res.entryId } : null;
   } catch (e) { console.warn('mirrorDebtAdd lỗi:', e); return null; }
 }
-/** Đồng bộ số tiền/ngày/ghi chú sang đúng dòng mirror (xem mirrorDebtAdd) khi sửa lại dòng gốc bên Nợ chung. */
-async function mirrorDebtUpdate(entryId, { amount, date, description }, sbToken) {
+/** Đồng bộ số tiền/ngày sang đúng dòng mirror (xem mirrorDebtAdd) khi sửa lại dòng gốc bên Nợ chung
+ * — mô tả LUÔN giữ cố định theo mirrorEntryDescription(), không đồng bộ mô tả tự do người dùng gõ. */
+async function mirrorDebtUpdate(entryId, { amount, date, debtKind }, sbToken) {
   if (!entryId) return;
-  try { await callAccountFunction(sbToken, { type: 'debt-mirror-update', entryId, amount, date, description }); }
+  try { await callAccountFunction(sbToken, { type: 'debt-mirror-update', entryId, amount, date, description: mirrorEntryDescription(debtKind) }); }
   catch (e) { console.warn('mirrorDebtUpdate lỗi:', e); }
 }
 /** Xóa dòng mirror (xem mirrorDebtAdd) khi dòng gốc bên Nợ chung bị xóa. */
@@ -908,9 +920,10 @@ export async function addDebtCharge({ creditorId, creditorName, memberUserId, sh
 
   let txnRow = null;
   if (addToTransactions) {
+    const catName = getCategory(categoryId)?.name || 'Mượn nợ';
     txnRow = {
       id: genId('txn'), type: 'income', amount: chargeAmount, category_id: categoryId || null,
-      note: `Mua nợ: ${creditor.name}${description ? ' - ' + description : ''}`, txn_date: entryDate, user_id: session.id, recurring_id: null,
+      note: `${catName}: ${creditor.name}${description ? ' - ' + description : ''}`, txn_date: entryDate, user_id: session.id, recurring_id: null,
     };
     const { error: txnErr } = await sb.from('transactions').insert(txnRow);
     if (txnErr) throw new Error('Không tạo được giao dịch, thử lại sau.');
@@ -938,10 +951,7 @@ export async function addDebtCharge({ creditorId, creditorName, memberUserId, sh
     console.warn('addDebtCharge: chọn thành viên nhưng creditor không có memberUserId — có thể trùng tên với sổ nợ người ngoài có sẵn.');
     mirrorFailed = true;
   } else if (creditor.memberUserId) {
-    const mirror = await mirrorDebtAdd(creditor, {
-      kind: 'lend', amount: chargeAmount, date: entryDate, description,
-      borrowerName: getUser(session.id)?.name || 'Người dùng', sbToken: session?.sbToken,
-    });
+    const mirror = await mirrorDebtAdd(creditor, { debtKind: 'charge', amount: chargeAmount, date: entryDate, sbToken: session?.sbToken });
     if (mirror) {
       if (!creditor.mirrorDebtorId) {
         await sb.from('creditors').update({ mirror_debtor_id: mirror.debtorId }).eq('id', creditor.id);
@@ -971,9 +981,10 @@ export async function addDebtPayment(creditorId, { amount, date, categoryId, des
 
   let txnRow = null;
   if (addToTransactions) {
+    const catName = getCategory(categoryId)?.name || 'Trả nợ';
     txnRow = {
       id: genId('txn'), type: 'expense', amount: payAmount, category_id: categoryId || null,
-      note: `Trả nợ: ${creditor.name}`, txn_date: payDate, user_id: session.id, recurring_id: null,
+      note: `${catName}: ${creditor.name}`, txn_date: payDate, user_id: session.id, recurring_id: null,
     };
     const { error: txnErr } = await sb.from('transactions').insert(txnRow);
     if (txnErr) throw new Error('Không tạo được giao dịch, thử lại sau.');
@@ -992,10 +1003,7 @@ export async function addDebtPayment(creditorId, { amount, date, categoryId, des
   // Trả cho 1 chủ nợ là thành viên trong sổ ĐÃ có mirror (đã từng mượn -> đã tự điền hộ sổ riêng của
   // họ, xem addDebtCharge) -> tự thêm dòng "collect" bên sổ riêng đó luôn, cho khớp với Nợ chung.
   if (creditor.memberUserId && creditor.mirrorDebtorId) {
-    const mirror = await mirrorDebtAdd(creditor, {
-      kind: 'collect', amount: payAmount, date: payDate, description,
-      borrowerName: getUser(session.id)?.name || 'Người dùng', sbToken: session?.sbToken,
-    });
+    const mirror = await mirrorDebtAdd(creditor, { debtKind: 'payment', amount: payAmount, date: payDate, sbToken: session?.sbToken });
     if (mirror) {
       await sb.from('debt_entries').update({ mirror_entry_id: mirror.entryId }).eq('id', entry.id);
       entry.mirrorEntryId = mirror.entryId;
@@ -1028,7 +1036,8 @@ export async function updateDebtEntry(id, { amount, date, description, categoryI
   let newTransactionId = e.transactionId;
   if (addToTransactions && !e.transactionId) {
     // Trước đây chưa đưa vào thu/chi, giờ tích chọn -> tạo mới giao dịch.
-    const note = e.kind === 'charge' ? `Mua nợ: ${creditor ? creditor.name : ''}${patch.description ? ' - ' + patch.description : ''}` : `Trả nợ: ${creditor ? creditor.name : ''}`;
+    const catName = getCategory(categoryId)?.name || (e.kind === 'charge' ? 'Mượn nợ' : 'Trả nợ');
+    const note = e.kind === 'charge' ? `${catName}: ${creditor ? creditor.name : ''}${patch.description ? ' - ' + patch.description : ''}` : `${catName}: ${creditor ? creditor.name : ''}`;
     const txnRow = {
       id: genId('txn'), type: txnType, amount: newAmount, category_id: categoryId || null,
       note, txn_date: newDate, user_id: session.id, recurring_id: null,
@@ -1054,7 +1063,7 @@ export async function updateDebtEntry(id, { amount, date, description, categoryI
   if (error) throw new Error('Không cập nhật được, thử lại sau.');
   Object.assign(e, { amount: newAmount, date: newDate, description: patch.description, transactionId: newTransactionId });
   if (creditor?.memberUserId && e.mirrorEntryId) {
-    await mirrorDebtUpdate(e.mirrorEntryId, { amount: newAmount, date: newDate, description: patch.description }, session?.sbToken);
+    await mirrorDebtUpdate(e.mirrorEntryId, { amount: newAmount, date: newDate, debtKind: e.kind }, session?.sbToken);
   }
   notify();
 }
