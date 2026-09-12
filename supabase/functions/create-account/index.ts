@@ -374,7 +374,8 @@ Deno.serve(async (req) => {
     const kind = body.kind === 'lend' || body.kind === 'collect' ? body.kind : null;
     const amount = Number(body.amount) || 0;
     if (!memberUserId || !kind || amount <= 0) return json({ ok: false, reason: 'Thiếu dữ liệu.' }, 400);
-    if (memberUserId === claims.row_id) return json({ ok: false, reason: 'Không tự mirror cho chính mình.' }, 400);
+    // Cho phép memberUserId === claims.row_id (mượn/trả với chính mình) — danh sách chọn ở app luôn
+    // có cả tài khoản đang đăng nhập (xem js/components/txnForm.js borrowFieldsHtml()).
     const { data: member } = await admin.from('users').select('id').eq('id', memberUserId).maybeSingle();
     if (!member) return json({ ok: false, reason: 'Không tìm thấy thành viên.' }, 404);
 

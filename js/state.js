@@ -844,15 +844,17 @@ async function ensureCreditor(name, sb, session, { shared = false, memberUserId 
   return c;
 }
 /** Mượn nợ 1 THÀNH VIÊN trong sổ (memberUserId) -> tự "điền hộ" luôn vào sổ "Người khác nợ tôi"
- * RIÊNG TƯ của đúng thành viên đó (kind='lend'), khỏi phải tự gõ tay lại 2 lần. Trả nợ cho chủ nợ
- * là 1 thành viên (memberUserId đã có mirrorDebtorId từ lần mượn trước) cũng tự thêm dòng "collect"
- * tương ứng để trừ nợ bên sổ riêng của họ luôn — 2 sổ (Nợ chung + sổ riêng của thành viên) LUÔN khớp
- * nhau, không cần nhập tay từng cái. Ghi vào bảng RIÊNG TƯ của NGƯỜI KHÁC nên RLS chặn viết trực
- * tiếp — phải nhờ Edge Function (service_role) làm hộ, xem type 'debt-mirror-add' ở
+ * RIÊNG TƯ của đúng thành viên đó (kind='lend'), khỏi phải tự gõ tay lại 2 lần — kể cả khi thành
+ * viên đó CHÍNH LÀ người đang đăng nhập (không loại trừ bản thân), vì "use" trong danh sách chọn
+ * luôn có cả chính mình (xem borrowFieldsHtml() ở txnForm.js). Trả nợ cho chủ nợ là 1 thành viên
+ * (memberUserId đã có mirrorDebtorId từ lần mượn trước) cũng tự thêm dòng "collect" tương ứng để
+ * trừ nợ bên sổ riêng của họ luôn — 2 sổ (Nợ chung + sổ riêng của thành viên) LUÔN khớp nhau, không
+ * cần nhập tay từng cái. Ghi vào bảng RIÊNG TƯ của NGƯỜI KHÁC (hoặc CHÍNH MÌNH) nên RLS chặn viết
+ * trực tiếp — phải nhờ Edge Function (service_role) làm hộ, xem type 'debt-mirror-add' ở
  * supabase/functions/create-account/index.ts. LUÔN "best effort": mirror lỗi chỉ console.warn, sổ
  * Nợ chung (nguồn dữ liệu chính) vẫn đúng dù mirror thất bại. */
 async function mirrorDebtAdd(creditor, { kind, amount, date, description, borrowerName, sbToken }) {
-  if (!creditor.memberUserId || creditor.memberUserId === getSession()?.id) return null;
+  if (!creditor.memberUserId) return null;
   try {
     const res = await callAccountFunction(sbToken, {
       type: 'debt-mirror-add', memberUserId: creditor.memberUserId, debtorId: creditor.mirrorDebtorId,
@@ -935,7 +937,7 @@ export async function addDebtCharge({ creditorId, creditorName, memberUserId, sh
     // giữ lại nhánh này để nếu vẫn xảy ra (sổ cũ tạo từ trước bản sửa) thì báo rõ thay vì im lặng.
     console.warn('addDebtCharge: chọn thành viên nhưng creditor không có memberUserId — có thể trùng tên với sổ nợ người ngoài có sẵn.');
     mirrorFailed = true;
-  } else if (creditor.memberUserId && creditor.memberUserId !== session.id) {
+  } else if (creditor.memberUserId) {
     const mirror = await mirrorDebtAdd(creditor, {
       kind: 'lend', amount: chargeAmount, date: entryDate, description,
       borrowerName: getUser(session.id)?.name || 'Người dùng', sbToken: session?.sbToken,
