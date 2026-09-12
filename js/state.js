@@ -823,13 +823,15 @@ export function totalSharedDebtRemaining() {
  * không thì khớp theo tên. Chủ nợ đã "đã trả hết" không tính, để lần ghi nợ mới cùng tên/thành viên
  * KHÔNG bị chồng vào sổ cũ đã đóng, mà tự mở 1 sổ nợ mới. */
 function findOpenCreditorByName(name, { shared = false, memberUserId = null } = {}) {
-  const key = (name || '').trim().toLowerCase();
   const pool = state.creditors.filter((c) => !!c.shared === !!shared && creditorBalance(c.id) > 0);
-  if (memberUserId) {
-    const byMember = pool.find((c) => c.memberUserId === memberUserId);
-    if (byMember) return byMember;
-  }
-  return pool.find((c) => c.name.trim().toLowerCase() === key);
+  // Chủ nợ là 1 THÀNH VIÊN cụ thể -> CHỈ khớp theo memberUserId, không rơi xuống so tên nữa — tránh
+  // trường hợp trước đó lỡ gõ tay 1 chủ nợ "người ngoài" TRÙNG TÊN với thành viên này (vd tự gõ tên
+  // thành viên ở tab "Người ngoài") rồi bị nhận nhầm là đúng sổ của thành viên, khiến khoản mượn mới
+  // không được đánh dấu `memberUserId` -> không tự điền hộ sang sổ riêng của họ được (mirrorDebtAdd
+  // bỏ qua vì tưởng đây là chủ nợ ngoài, không phải lỗi Edge Function/SQL gì cả).
+  if (memberUserId) return pool.find((c) => c.memberUserId === memberUserId) || null;
+  const key = (name || '').trim().toLowerCase();
+  return pool.find((c) => !c.memberUserId && c.name.trim().toLowerCase() === key) || null;
 }
 async function ensureCreditor(name, sb, session, { shared = false, memberUserId = null } = {}) {
   const existing = findOpenCreditorByName(name, { shared, memberUserId });
@@ -927,7 +929,13 @@ export async function addDebtCharge({ creditorId, creditorName, memberUserId, sh
   // dùng biết nếu bước điền hộ này thất bại (VD chưa deploy đủ Edge Function/SQL mới), tránh im
   // lặng khiến người dùng tưởng nhầm là app có lỗi trong khi Nợ chung vẫn ghi đúng bình thường.
   let mirrorFailed = false;
-  if (creditor.memberUserId && creditor.memberUserId !== session.id) {
+  if (memberUserId && !creditor.memberUserId) {
+    // Đã chọn thành viên nhưng chủ nợ tìm/tạo ra lại KHÔNG gắn memberUserId — trước đây từng xảy ra
+    // khi trùng tên với 1 sổ "người ngoài" có sẵn nên bị nhận nhầm (đã sửa ở findOpenCreditorByName),
+    // giữ lại nhánh này để nếu vẫn xảy ra (sổ cũ tạo từ trước bản sửa) thì báo rõ thay vì im lặng.
+    console.warn('addDebtCharge: chọn thành viên nhưng creditor không có memberUserId — có thể trùng tên với sổ nợ người ngoài có sẵn.');
+    mirrorFailed = true;
+  } else if (creditor.memberUserId && creditor.memberUserId !== session.id) {
     const mirror = await mirrorDebtAdd(creditor, {
       kind: 'lend', amount: chargeAmount, date: entryDate, description,
       borrowerName: getUser(session.id)?.name || 'Người dùng', sbToken: session?.sbToken,
@@ -1147,13 +1155,12 @@ export function totalReceivable() {
  * `memberUserId` nếu có truyền, không thì khớp theo tên. Người đã "đã trả hết" không tính, để lần
  * cho vay mới cùng tên/thành viên KHÔNG bị chồng vào sổ cũ đã đóng, mà tự mở 1 sổ mới. */
 function findOpenDebtorByName(name, { shared = false, memberUserId = null } = {}) {
-  const key = (name || '').trim().toLowerCase();
   const pool = state.debtors.filter((d) => !!d.shared === !!shared && debtorBalance(d.id) > 0);
-  if (memberUserId) {
-    const byMember = pool.find((d) => d.memberUserId === memberUserId);
-    if (byMember) return byMember;
-  }
-  return pool.find((d) => d.name.trim().toLowerCase() === key);
+  // Xem giải thích ở findOpenCreditorByName() — CHỈ khớp theo memberUserId khi có truyền, không rơi
+  // xuống so tên nữa (tránh nhận nhầm sổ "người ngoài" trùng tên với 1 thành viên trong sổ).
+  if (memberUserId) return pool.find((d) => d.memberUserId === memberUserId) || null;
+  const key = (name || '').trim().toLowerCase();
+  return pool.find((d) => !d.memberUserId && d.name.trim().toLowerCase() === key) || null;
 }
 async function ensureDebtor(name, sb, session, { shared = false, memberUserId = null } = {}) {
   const existing = findOpenDebtorByName(name, { shared, memberUserId });
