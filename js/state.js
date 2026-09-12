@@ -203,17 +203,26 @@ async function seedDefaultCategories(sb) {
   if (!error) state.categories = rows.map(mapCategoryRow);
 }
 /** Project ĐÃ có danh mục từ trước (tạo trước khi có tính năng Mượn/Trả nợ) -> tự bù thêm đúng 2
- * danh mục hệ thống còn thiếu (không đụng gì tới danh mục người dùng đã tự tạo/sửa). Chạy mỗi lần
- * đăng nhập, tự bỏ qua nếu đã đủ — an toàn để gọi lặp lại nhiều lần. */
+ * danh mục hệ thống còn thiếu. Nếu người dùng đã TỰ tạo sẵn 1 danh mục trùng tên/loại từ trước (VD
+ * tự đặt "Mượn nợ" cho khoản thu) -> chỉ gắn thêm cờ `special` vào ĐÚNG danh mục đó, không tạo mới
+ * trùng lặp — chỉ khi KHÔNG tìm thấy tên trùng mới tự tạo danh mục mới. Chạy mỗi lần đăng nhập, tự
+ * bỏ qua nếu đã đủ — an toàn để gọi lặp lại nhiều lần. */
 async function ensureSpecialCategories(sb) {
   const missing = SPECIAL_CATEGORIES.filter((sc) => !state.categories.some((c) => c.special === sc.special));
-  if (!missing.length) return;
-  const startOrder = state.categories.length;
-  const rows = missing.map((c, i) => ({
-    id: genId('cat'), name: c.name, type: c.type, icon: c.icon, color: colorAt(startOrder + i), sort_order: startOrder + i, special: c.special,
-  }));
-  const { error } = await sb.from('categories').insert(rows);
-  if (!error) state.categories.push(...rows.map(mapCategoryRow));
+  for (const sc of missing) {
+    const existing = state.categories.find((c) => c.type === sc.type && c.name.trim().toLowerCase() === sc.name.toLowerCase());
+    if (existing) {
+      const { error } = await sb.from('categories').update({ special: sc.special }).eq('id', existing.id);
+      if (!error) existing.special = sc.special;
+    } else {
+      const row = {
+        id: genId('cat'), name: sc.name, type: sc.type, icon: sc.icon,
+        color: colorAt(state.categories.length), sort_order: state.categories.length, special: sc.special,
+      };
+      const { error } = await sb.from('categories').insert(row);
+      if (!error) state.categories.push(mapCategoryRow(row));
+    }
+  }
 }
 
 function mapUserProfileRow(row) {
