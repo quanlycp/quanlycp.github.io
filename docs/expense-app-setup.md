@@ -633,9 +633,17 @@ GitHub, vì GitHub Pages chỉ phục vụ phần giao diện (HTML/CSS/JS), KH�
 Nếu chọn 1 thành viên khi Mượn nợ mà đăng nhập bằng tài khoản thành viên đó vẫn KHÔNG thấy khoản đó
 trong **Công nợ → Người khác nợ tôi** — 99% là do **CHƯA làm đủ** 13.1 + 13.2 ở trên (chưa chạy SQL,
 hoặc đã sửa code nhưng CHƯA bấm Deploy lại trên Supabase Dashboard). App sẽ tự báo bằng 1 thông báo
-đỏ ngay sau khi ghi ("Đã ghi vào Nợ chung, nhưng CHƯA điền được...") nếu bước điền hộ này thất bại —
-khoản Nợ chung chính vẫn luôn ghi đúng bình thường dù bước điền hộ có lỗi, chỉ thiếu phần tiện ích tự
-điền thêm này thôi, không mất dữ liệu.
+đỏ ngay sau khi ghi ("Đã ghi vào Nợ chung, nhưng CHƯA điền/đồng bộ được...") nếu bước điền hộ này
+thất bại — khoản Nợ chung chính vẫn luôn ghi đúng bình thường dù bước điền hộ có lỗi, chỉ thiếu phần
+tiện ích tự điền thêm này thôi, không mất dữ liệu.
+
+Riêng trường hợp **đã thấy khoản mượn hiện đúng bên "Người khác nợ tôi", nhưng SAU ĐÓ xóa/sửa/trả
+nợ ở bên Nợ chung lại KHÔNG thấy đồng bộ theo** (dòng bên "Người khác nợ tôi" bị "mồ côi", không tự
+xóa/cập nhật theo) — đây là do CHƯA chạy đủ SQL 13.1 (2 cột `mirror_debtor_id`/`mirror_entry_id`):
+lúc ghi mượn, app tạo được dòng mirror (nên vẫn thấy) nhưng KHÔNG lưu lại được "con trỏ" trỏ tới
+dòng đó (do thiếu cột) — lần sau tải lại trang sẽ không còn biết dòng mirror nằm ở đâu để xóa/sửa
+theo nữa. Chạy đủ SQL 13.1 rồi làm lại (mượn 1 khoản MỚI) là hết — khoản mượn CŨ đã lỡ tạo trong
+lúc thiếu cột thì cần vào tay bên "Người khác nợ tôi" của thành viên đó xóa/sửa thủ công.
 
 ### 13.4 Việc còn lại cho mục này
 

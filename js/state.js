@@ -976,12 +976,21 @@ export async function addDebtCharge({ creditorId, creditorName, memberUserId, sh
   } else if (creditor.memberUserId) {
     const mirror = await mirrorDebtAdd(creditor, { debtKind: 'charge', amount: chargeAmount, date: entryDate, sbToken: session?.sbToken });
     if (mirror) {
+      // LƯU LẠI con trỏ tới dòng mirror vừa tạo (mirror_debtor_id/mirror_entry_id) — nếu 2 lệnh
+      // update này lỗi (VD chưa chạy SQL mục 13.1 thêm cột) thì lần sau tải lại trang (đăng nhập
+      // lại/refresh) sẽ KHÔNG còn biết dòng mirror này ở đâu để đồng bộ sửa/xóa theo nữa (dòng
+      // mirror thành "mồ côi", vẫn tồn tại nhưng mất liên kết) -> phải coi đây là mirror THẤT BẠI để
+      // báo rõ cho người dùng, không chỉ im lặng cập nhật mỗi biến trong bộ nhớ.
+      let linkOk = true;
       if (!creditor.mirrorDebtorId) {
-        await sb.from('creditors').update({ mirror_debtor_id: mirror.debtorId }).eq('id', creditor.id);
-        creditor.mirrorDebtorId = mirror.debtorId;
+        const { error: linkErr } = await sb.from('creditors').update({ mirror_debtor_id: mirror.debtorId }).eq('id', creditor.id);
+        if (linkErr) { console.warn('addDebtCharge: không lưu được mirror_debtor_id (thiếu cột? xem docs mục 13.1):', linkErr.message); linkOk = false; }
+        else creditor.mirrorDebtorId = mirror.debtorId;
       }
-      await sb.from('debt_entries').update({ mirror_entry_id: mirror.entryId }).eq('id', entry.id);
-      entry.mirrorEntryId = mirror.entryId;
+      const { error: entryLinkErr } = await sb.from('debt_entries').update({ mirror_entry_id: mirror.entryId }).eq('id', entry.id);
+      if (entryLinkErr) { console.warn('addDebtCharge: không lưu được mirror_entry_id (thiếu cột? xem docs mục 13.1):', entryLinkErr.message); linkOk = false; }
+      else entry.mirrorEntryId = mirror.entryId;
+      if (!linkOk) mirrorFailed = true;
     } else {
       mirrorFailed = true;
     }
@@ -1025,15 +1034,19 @@ export async function addDebtPayment(creditorId, { amount, date, categoryId, des
 
   // Trả cho 1 chủ nợ là thành viên trong sổ ĐÃ có mirror (đã từng mượn -> đã tự điền hộ sổ riêng của
   // họ, xem addDebtCharge) -> tự thêm dòng "collect" bên sổ riêng đó luôn, cho khớp với Nợ chung.
+  let mirrorFailed = false;
   if (creditor.memberUserId && creditor.mirrorDebtorId) {
     const mirror = await mirrorDebtAdd(creditor, { debtKind: 'payment', amount: payAmount, date: payDate, sbToken: session?.sbToken });
     if (mirror) {
-      await sb.from('debt_entries').update({ mirror_entry_id: mirror.entryId }).eq('id', entry.id);
-      entry.mirrorEntryId = mirror.entryId;
+      const { error: entryLinkErr } = await sb.from('debt_entries').update({ mirror_entry_id: mirror.entryId }).eq('id', entry.id);
+      if (entryLinkErr) { console.warn('addDebtPayment: không lưu được mirror_entry_id (thiếu cột? xem docs mục 13.1):', entryLinkErr.message); mirrorFailed = true; }
+      else entry.mirrorEntryId = mirror.entryId;
+    } else {
+      mirrorFailed = true;
     }
   }
   notify();
-  return { transactionId: txnRow?.id || null };
+  return { transactionId: txnRow?.id || null, mirrorFailed };
 }
 /** Sửa 1 dòng ghi nợ/trả nợ. addToTransactions điều khiển việc tạo/xóa/đồng bộ giao dịch thu/chi thật
  * đi kèm (nếu có) — loại giao dịch tự suy ra từ kind (charge=thu, payment=chi, xem addDebtCharge). */
