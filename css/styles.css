@@ -299,6 +299,17 @@ svg { display: block; }
 }
 .tabs button.active { background: var(--surface); color: var(--color-primary); box-shadow: var(--shadow-sm); }
 
+/* Tabs nhỏ gọn — dùng cho lựa chọn phụ lồng bên trong 1 ô/card (VD chọn "Người ngoài"/"Thành
+   viên trong sổ" khi Mượn nợ) — nhỏ hơn .tabs ở trên, màu chọn đậm hẳn (nền màu chính, chữ trắng)
+   để dễ phân biệt đang chọn mục nào. */
+.tabs-sm { display: flex; gap: 4px; background: var(--surface-alt); border-radius: 8px; padding: 3px; }
+.tabs-sm button {
+  flex: 1; border: none; background: transparent; padding: 6px 8px;
+  border-radius: 6px; font-size: 12.5px; font-weight: 600; color: var(--text-muted);
+  cursor: pointer;
+}
+.tabs-sm button.active { background: var(--color-primary); color: #fff; }
+
 .subtabs { display: flex; gap: 18px; border-bottom: 1px solid var(--border); padding: 0 2px; overflow-x: auto; }
 .subtabs button {
   border: none; background: none; padding: 10px 2px; font-size: 13.5px; font-weight: 600;

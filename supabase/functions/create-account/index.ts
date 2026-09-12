@@ -12,8 +12,13 @@
 //   { type: 'login', identifier, password }
 //     -> PHẢI gọi trước để lấy JWT — không cần JWT sẵn có.
 //   { type: 'verify-own-password', password } / { type: 'set-own-password',
-//     newPassword, mustChangePassword? } -> tự đổi mật khẩu CHÍNH MÌNH, cần
-//     JWT hợp lệ (owner hoặc member đều được).
+//     newPassword, mustChangePassword? } / { type: 'set-own-name', name }
+//     -> tự đổi mật khẩu/tên hiển thị CHÍNH MÌNH, cần JWT hợp lệ (owner hoặc
+//     member đều được).
+//   { type: 'debt-mirror-add'|'debt-mirror-update'|'debt-mirror-delete' } ->
+//     đồng bộ Nợ chung sang sổ "Người khác nợ tôi" RIÊNG TƯ của 1 thành viên
+//     cụ thể (xem js/state.js mirrorDebtAdd() và docs/expense-app-setup.md
+//     mục 13) — cần JWT hợp lệ, KHÔNG cần là owner.
 //   { type: 'send-due' } -> hệ thống (pg_cron gọi mỗi phút), cần header
 //     "x-cron-secret" đúng CRON_SECRET_KEY, KHÔNG dùng JWT — gửi push cho các
 //     thông báo/lịch nhắc trong bảng notifications đã tới giờ (xem
@@ -291,6 +296,22 @@ Deno.serve(async (req) => {
     return json({ ok: true });
   }
 
+  // ===== type: 'set-own-name' — tự đổi TÊN HIỂN THỊ của chính mình (owner hoặc member đều được,
+  // không cần là owner) — bảng `users` không cấp quyền ghi trực tiếp cho client nên phải qua đây. =====
+  if (body.type === 'set-own-name') {
+    const authHeader = req.headers.get('Authorization') || '';
+    const selfToken = authHeader.replace(/^Bearer\s+/i, '');
+    const selfClaims = selfToken ? await verifyJwt(selfToken) : null;
+    if (!selfClaims || !selfClaims.app_role) {
+      return json({ ok: false, reason: 'Chưa đăng nhập hoặc phiên đã hết hạn.' }, 401);
+    }
+    const name = String(body.name || '').trim();
+    if (!name) return json({ ok: false, reason: 'Cần nhập tên hiển thị.' }, 400);
+    const { error } = await admin.from('users').update({ name }).eq('id', selfClaims.row_id);
+    if (error) return json({ ok: false, reason: 'Lỗi hệ thống, thử lại sau.' }, 500);
+    return json({ ok: true });
+  }
+
   // ===== type: 'send-due' — pg_cron gọi mỗi phút (KHÔNG có JWT người dùng nào cả, đây là
   // tác vụ hệ thống) để gửi push cho các thông báo/lịch nhắc đã tới giờ. Xác thực bằng 1 mật
   // khẩu riêng (CRON_SECRET_KEY) qua header, không dùng verifyJwt() ở trên. =====
@@ -331,13 +352,73 @@ Deno.serve(async (req) => {
     return json({ ok: true, sent });
   }
 
-  // ===== Mọi type khác: bắt buộc JWT của user role='owner' =====
+  // ===== Mọi type còn lại: bắt buộc có JWT hợp lệ (owner HOẶC member đều được — kiểm tra role chi
+  // tiết hơn ở TỪNG "type" bên dưới, không gộp chung 1 điều kiện owner như trước nữa). =====
   const authHeader = req.headers.get('Authorization') || '';
   const token = authHeader.replace(/^Bearer\s+/i, '');
   const claims = token ? await verifyJwt(token) : null;
   if (!claims || !claims.app_role) {
     return json({ ok: false, reason: 'Chưa đăng nhập hoặc phiên đã hết hạn.' }, 401);
   }
+
+  // ===== type: 'debt-mirror-add' / 'debt-mirror-update' / 'debt-mirror-delete' — đồng bộ 1 CHIỀU
+  // từ sổ "Nợ chung" (ai cũng sửa được qua RLS, xem docs/expense-app-setup.md mục 12) sang sổ
+  // "Người khác nợ tôi" RIÊNG TƯ của đúng 1 thành viên cụ thể (memberUserId) — bảng riêng tư này
+  // RLS chỉ cho đúng chủ sở hữu ghi, nên phải chạy Ở ĐÂY bằng service_role thay mặt họ. BẤT KỲ user
+  // nào (owner lẫn member) gọi được, không cần là owner — đây chỉ là tiện ích tự điền hộ, không phải
+  // thao tác quản trị tài khoản. Xem js/state.js mirrorDebtAdd()/mirrorDebtUpdate()/mirrorDebtDelete()
+  // và docs/expense-app-setup.md mục 13. =====
+  if (body.type === 'debt-mirror-add') {
+    const memberUserId = String(body.memberUserId || '').trim();
+    const kind = body.kind === 'lend' || body.kind === 'collect' ? body.kind : null;
+    const amount = Number(body.amount) || 0;
+    if (!memberUserId || !kind || amount <= 0) return json({ ok: false, reason: 'Thiếu dữ liệu.' }, 400);
+    if (memberUserId === claims.row_id) return json({ ok: false, reason: 'Không tự mirror cho chính mình.' }, 400);
+    const { data: member } = await admin.from('users').select('id').eq('id', memberUserId).maybeSingle();
+    if (!member) return json({ ok: false, reason: 'Không tìm thấy thành viên.' }, 404);
+
+    let debtorId = String(body.debtorId || '').trim() || null;
+    if (debtorId) {
+      const { data: existing } = await admin.from('debtors').select('id').eq('id', debtorId).eq('user_id', memberUserId).maybeSingle();
+      if (!existing) debtorId = null; // debtorId lạ/không khớp chủ -> bỏ qua, tự tạo sổ mới bên dưới
+    }
+    if (!debtorId) {
+      debtorId = genId('debtor');
+      const { error: debtorErr } = await admin.from('debtors').insert({
+        id: debtorId, name: String(body.name || 'Người dùng').trim() || 'Người dùng', note: '',
+        user_id: memberUserId, shared: false, member_user_id: claims.row_id,
+      });
+      if (debtorErr) return json({ ok: false, reason: 'Lỗi hệ thống, thử lại sau.' }, 500);
+    }
+    const entryId = genId('recv');
+    const { error: entryErr } = await admin.from('receivable_entries').insert({
+      id: entryId, debtor_id: debtorId, kind, amount,
+      entry_date: body.date || new Date().toISOString().slice(0, 10), description: body.description || '',
+      transaction_id: null, user_id: memberUserId, shared: false,
+    });
+    if (entryErr) return json({ ok: false, reason: 'Lỗi hệ thống, thử lại sau.' }, 500);
+    return json({ ok: true, debtorId, entryId });
+  }
+
+  if (body.type === 'debt-mirror-update') {
+    const entryId = String(body.entryId || '').trim();
+    const amount = Number(body.amount) || 0;
+    if (!entryId || amount <= 0) return json({ ok: false, reason: 'Thiếu dữ liệu.' }, 400);
+    const { error } = await admin.from('receivable_entries')
+      .update({ amount, entry_date: body.date, description: body.description || '' }).eq('id', entryId);
+    if (error) return json({ ok: false, reason: 'Lỗi hệ thống, thử lại sau.' }, 500);
+    return json({ ok: true });
+  }
+
+  if (body.type === 'debt-mirror-delete') {
+    const entryId = String(body.entryId || '').trim();
+    if (!entryId) return json({ ok: false, reason: 'Thiếu dữ liệu.' }, 400);
+    const { error } = await admin.from('receivable_entries').delete().eq('id', entryId);
+    if (error) return json({ ok: false, reason: 'Lỗi hệ thống, thử lại sau.' }, 500);
+    return json({ ok: true });
+  }
+
+  // ===== Mọi type còn lại nữa: bắt buộc JWT của user role='owner' =====
   if (claims.app_role !== 'owner') {
     return json({ ok: false, reason: 'Chỉ chủ sổ (owner) mới được thực hiện thao tác này.' }, 403);
   }

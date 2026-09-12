@@ -132,7 +132,7 @@ function borrowFieldsHtml() {
   return `
     <div class="card card-pad mb-16" style="background:var(--surface-alt);border-color:transparent">
       ${members.length ? `
-      <div class="tabs mb-16">
+      <div class="tabs-sm mb-12">
         <button type="button" data-counterpart-type="external" class="active">Người ngoài</button>
         <button type="button" data-counterpart-type="member">Thành viên trong sổ</button>
       </div>` : ''}

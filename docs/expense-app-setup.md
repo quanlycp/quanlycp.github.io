@@ -596,10 +596,46 @@ trên (giống `creditors`/`debt_entries` gốc).
       cho đúng 2 danh mục "Mượn nợ"/"Trả nợ" (nếu bạn đã tự tạo sẵn 2 danh mục cùng tên/loại từ
       trước thì DÙNG LUÔN đúng 2 danh mục đó, không tạo trùng thêm cái mới; chưa có thì mới tự tạo).
 
-## 13. Việc còn lại
+## 13. Bổ sung sau: tự điền "Mượn nợ" sang sổ riêng của thành viên + đổi tên hiển thị (nếu project đã tạo trước khi có mục này)
+
+Tính năng: khi **Mượn nợ** chọn 1 **thành viên trong sổ** (không phải người ngoài) làm chủ nợ, app tự
+"điền hộ" luôn khoản đó vào sổ **"Người khác nợ tôi"** RIÊNG TƯ của đúng thành viên đó — họ mở app lên
+là thấy ngay, khỏi phải tự gõ tay lại. Khi **Trả nợ** cho đúng chủ nợ đó, sổ riêng của họ cũng tự trừ
+theo — 2 sổ (Nợ chung + sổ riêng của thành viên) LUÔN khớp nhau. Kèm theo: mục **Đổi mật khẩu** giờ có
+thêm ô **"Tên hiển thị"** để tự đổi tên bất cứ lúc nào (owner lẫn member) — không cần sửa bằng SQL nữa.
+
+### 13.1 Tạo cột mới (chạy trong SQL Editor)
+
+```sql
+-- Lưu lại: chủ nợ này đã "điền hộ" vào đúng sổ (debtors) nào của thành viên đó (tạo 1 lần, dùng lại
+-- cho các lần mượn/trả sau — không tạo 1 sổ mới mỗi lần); mỗi dòng ghi nợ/trả nợ lưu lại đã điền hộ
+-- vào đúng dòng (receivable_entries) nào để sửa/xóa còn đồng bộ theo. Cả 2 cột đều nullable, không
+-- ảnh hưởng chủ nợ/dòng nợ "người ngoài" (không có thành viên nào để điền hộ).
+alter table creditors add column if not exists mirror_debtor_id text;
+alter table debt_entries add column if not exists mirror_entry_id text;
+```
+
+Không cần sửa RLS gì thêm — 2 cột này chỉ đọc/ghi trên `creditors`/`debt_entries` (đã có policy từ
+mục 12), còn việc ghi vào sổ RIÊNG TƯ của người khác luôn đi qua Edge Function (service_role), không
+qua RLS.
+
+### 13.2 Deploy lại Edge Function
+
+Khác với mục 12, lần này **CÓ sửa** `supabase/functions/create-account/index.ts` (thêm type
+`set-own-name`, `debt-mirror-add`, `debt-mirror-update`, `debt-mirror-delete`) — vào **Edge Functions
+→ create-account** trên Dashboard, dán lại TOÀN BỘ nội dung file mới nhất rồi **Deploy** lại (giống
+lúc tạo lần đầu ở mục 4).
+
+### 13.3 Việc còn lại cho mục này
+
+- [ ] Chạy SQL ở 13.1 + deploy lại Edge Function ở 13.2.
+- [ ] Vào **Đổi mật khẩu** tự đổi tên hiển thị của mình (VD đổi "Chủ sổ" thành tên thật) nếu cần.
+
+## 14. Việc còn lại
 
 - [ ] Đổi mật khẩu owner ngay sau lần đăng nhập đầu tiên (app tự bắt đổi).
 - [ ] Rà soát dữ liệu chi tiêu thật trước khi coi là "đang dùng thật".
 - [ ] (Tùy chọn) Làm theo mục 10 nếu muốn dùng Thông báo đẩy/lịch nhắc tự động.
 - [ ] (Tùy chọn) Làm theo mục 11 nếu muốn dùng "Công nợ phải thu" (người khác nợ mình).
 - [ ] (Tùy chọn) Làm theo mục 12 nếu muốn Mượn/Trả nợ ngay từ Giao dịch + Nợ chung.
+- [ ] (Tùy chọn) Làm theo mục 13 nếu muốn tự điền hộ Mượn nợ sang sổ riêng của thành viên + đổi tên hiển thị.
