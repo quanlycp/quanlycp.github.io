@@ -37,6 +37,10 @@ Web app quản lý chi tiêu & kế hoạch ngân sách hàng tháng cho gia đ�
   mật khẩu, xóa tài khoản (không mất giao dịch đã ghi trong sổ chung), **đổi tên hiển thị** của bất
   kỳ ai (kể cả chính mình) ngay tại đây. Mỗi người (owner lẫn member) cũng tự đổi tên hiển thị của
   mình bất cứ lúc nào ở mục **Đổi mật khẩu**.
+- **Nhật ký** (chỉ chủ sổ thấy): tự động ghi lại mọi lượt **Thêm/Sửa/Xóa giao dịch** của mọi thành
+  viên — ai làm, lúc nào, nội dung/số tiền/ngày của giao dịch đó — phục vụ rà soát (ghi bằng trigger
+  ở Supabase nên bắt được mọi đường tạo/sửa/xóa giao dịch, kể cả Mượn/Trả nợ, Xác nhận định kỳ, Hoàn
+  thành kế hoạch..., xem `docs/expense-app-setup.md` mục 14).
 - **Thông báo**: bật Thông báo đẩy (Web Push) trên từng thiết bị, soạn & gửi ngay 1 thông báo cho
   1 người khác/tất cả mọi người/chính mình, hoặc đặt **lịch nhắc** tới đúng ngày giờ mới tự động
   gửi — nhận được cả khi không mở app (cần cấu hình thêm, xem `docs/expense-app-setup.md` mục 10).

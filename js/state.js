@@ -521,6 +521,29 @@ export async function deleteTransaction(id) {
 }
 
 // ------------------------------------------------------------
+// Nhật ký hoạt động (Thêm/Sửa/Xóa giao dịch) — CHỈ chủ sổ xem được (RLS), phục vụ rà soát của
+// Trưởng ban kiểm soát. Ghi bằng TRIGGER ở chính Supabase (không phải code JS gọi tay từng chỗ) —
+// tự bắt được MỌI đường tạo/sửa/xóa transactions hiện có lẫn thêm sau này (Thêm giao dịch, Mượn/
+// Trả nợ, Xác nhận định kỳ, Hoàn thành kế hoạch...), khỏi lo code bỏ sót chỗ nào. Xem
+// docs/expense-app-setup.md mục 14. KHÔNG cache trong `state` chính (chỉ chủ sổ cần, hiếm khi vào)
+// — tải trực tiếp mỗi lần vào trang Nhật ký.
+// ------------------------------------------------------------
+function mapActivityLogRow(row) {
+  return {
+    id: row.id, action: row.action, txnId: row.txn_id, userId: row.user_id, userName: row.user_name || 'Không rõ',
+    txnType: row.txn_type, txnAmount: Number(row.txn_amount) || 0, txnCategoryName: row.txn_category_name || '',
+    txnNote: row.txn_note || '', txnDate: row.txn_date, createdAt: row.created_at,
+  };
+}
+export async function fetchActivityLog(limit = 200) {
+  const session = getSession();
+  const sb = getSupabaseClient(session?.sbToken);
+  const { data, error } = await sb.from('activity_log').select('*').order('created_at', { ascending: false }).limit(limit);
+  if (error) throw new Error('Không tải được nhật ký, thử lại sau.');
+  return (data || []).map(mapActivityLogRow);
+}
+
+// ------------------------------------------------------------
 // Tính toán theo tháng — dashboard, ngân sách, báo cáo dùng chung
 // ------------------------------------------------------------
 export function monthKey(year, month) { return `${year}-${String(month).padStart(2, '0')}`; }

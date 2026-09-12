@@ -17,6 +17,7 @@ export const NAV = [
 export const NAV_OWNER_ONLY = [
   { path: '#/nguoi-dung', label: 'Quản lý User', shortLabel: 'User', icon: 'idCard' },
   { path: '#/cai-dat', label: 'Cài đặt', shortLabel: 'Cài đặt', icon: 'settings' },
+  { path: '#/nhat-ky', label: 'Nhật ký', shortLabel: 'Nhật ký', icon: 'clock' },
 ];
 // Số mục tối đa hiện trực tiếp trên thanh menu dưới (mobile) — còn lại gộp vào "Thêm"
 // để không bị lệch/chồng chữ khi có nhiều mục.
