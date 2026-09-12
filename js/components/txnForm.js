@@ -126,8 +126,9 @@ export function openTransactionForm({ transaction, defaultType = 'expense', onSa
 // Ô bổ sung khi chọn danh mục "Mượn nợ" (khoản thu)
 // ------------------------------------------------------------
 function borrowFieldsHtml() {
-  const session = S.getSession();
-  const members = S.listMembers().filter((u) => u.id !== session.id);
+  // Liệt kê TẤT CẢ user trong sổ (kể cả chính mình) — vì khoản này luôn vào Nợ chung, ai xem/sửa
+  // cũng như nhau, không cần loại người đang đăng nhập ra khỏi danh sách chọn.
+  const members = S.listMembers();
   return `
     <div class="card card-pad mb-16" style="background:var(--surface-alt);border-color:transparent">
       ${members.length ? `
@@ -150,15 +151,13 @@ function borrowFieldsHtml() {
 }
 
 // ------------------------------------------------------------
-// Ô bổ sung khi chọn danh mục "Trả nợ" (khoản chi)
+// Ô bổ sung khi chọn danh mục "Trả nợ" (khoản chi) — mục này CHỈ có Nợ chung (không còn khoản
+// riêng tư nào tạo được từ đây nữa từ khi "Mượn nợ" luôn luôn vào Nợ chung), nên khỏi cần ghi
+// thêm "[Nợ chung]" trước tên cho rối.
 // ------------------------------------------------------------
 function repayFieldsHtml() {
-  const privateDebts = S.listCreditors({ status: 'active', shared: false });
   const sharedDebts = S.listCreditors({ status: 'active', shared: true });
-  const optionsHtml = [
-    ...privateDebts.map((c) => `<option value="${c.id}" data-shared="0">${c.name} — còn ${formatVND(c.balance)}</option>`),
-    ...sharedDebts.map((c) => `<option value="${c.id}" data-shared="1">[Nợ chung] ${c.name} — còn ${formatVND(c.balance)}</option>`),
-  ].join('');
+  const optionsHtml = sharedDebts.map((c) => `<option value="${c.id}" data-balance="${c.balance}">${c.name} — còn ${formatVND(c.balance)}</option>`).join('');
   return `
     <div class="field">
       <label>Trả cho khoản nợ nào</label>
@@ -166,7 +165,8 @@ function repayFieldsHtml() {
         <option value="">Trả khoản nợ khác (không theo dõi trong Công nợ)</option>
         ${optionsHtml}
       </select>
-      ${!privateDebts.length && !sharedDebts.length ? `<div class="field-hint">Chưa có khoản nợ nào đang theo dõi — chọn "Mượn nợ" ở khoản thu trước, hoặc cứ ghi khoản chi này bình thường.</div>` : ''}
+      <div class="field-hint" id="debt-repay-hint" style="display:none"></div>
+      ${!sharedDebts.length ? `<div class="field-hint">Chưa có khoản Nợ chung nào đang theo dõi — chọn "Mượn nợ" ở khoản thu trước, hoặc cứ ghi khoản chi này bình thường.</div>` : ''}
     </div>
   `;
 }
@@ -184,6 +184,22 @@ function bindDebtFieldEvents(container) {
         memberField.style.display = isMember ? '' : 'none';
       });
     });
+  }
+  // Chọn khoản nợ để trả -> nhắc rõ số còn nợ, không cho nhập quá số này (chặn thật ở submitRepay).
+  const repaySelect = container.querySelector('#debt-repay-select');
+  if (repaySelect) {
+    const hint = container.querySelector('#debt-repay-hint');
+    function syncHint() {
+      const opt = repaySelect.selectedOptions[0];
+      if (opt && opt.value) {
+        hint.textContent = `Nợ còn ${formatVND(Number(opt.dataset.balance))} — không nhập số tiền vượt quá số này.`;
+        hint.style.display = '';
+      } else {
+        hint.style.display = 'none';
+      }
+    }
+    repaySelect.addEventListener('change', syncHint);
+    syncHint();
   }
 }
 
@@ -208,10 +224,13 @@ async function submitBorrow(sheet, { amount, date, description, categoryId }) {
  * hoặc 1 khoản riêng tư cũ đã ghi từ trang Công nợ), hoặc chỉ ghi 1 khoản chi thường nếu chọn "Trả
  * khoản nợ khác (không theo dõi)". */
 async function submitRepay(sheet, { amount, date, description, categoryId }) {
-  const creditorId = sheet.querySelector('#debt-repay-select').value;
+  const select = sheet.querySelector('#debt-repay-select');
+  const creditorId = select.value;
   if (!creditorId) {
     await S.addTransaction({ type: 'expense', amount, categoryId, date, note: description });
     return;
   }
+  const balance = Number(select.selectedOptions[0].dataset.balance);
+  if (amount > balance) throw new Error(`Số tiền trả không được vượt quá nợ còn lại (${formatVND(balance)}).`);
   await S.addDebtPayment(creditorId, { amount, date, description, categoryId, addToTransactions: true });
 }

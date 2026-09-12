@@ -108,7 +108,7 @@ const DIRECTIONS = {
     entryDescLabel: 'Mượn để làm gì',
     statusActiveTab: 'Đang nợ', statusPaidTab: 'Đã trả hết',
     statusActiveLabel: 'còn nợ', statusPaidLabel: 'đã hết nợ',
-    emptyActive: { title: 'Quỹ chung chưa nợ ai', message: 'Bấm "Ghi nợ chung mới", hoặc chọn "Khoản nợ CHUNG của quỹ" khi Mượn nợ ở trang Giao dịch.' },
+    emptyActive: { title: 'Quỹ chung chưa nợ ai', message: 'Bấm "Ghi nợ chung mới", hoặc chọn danh mục "Mượn nợ" ở khoản thu tại trang Giao dịch (luôn tự vào đây).' },
     emptyPaid: { title: 'Chưa có chủ nợ chung nào trả hết', message: 'Chủ nợ trả hết nợ sẽ chuyển sang đây.' },
     deleteNameConfirm: (name, warn) => `Xóa toàn bộ lịch sử/sổ nợ CHUNG mang tên "${name}" khỏi gợi ý.${warn} Các giao dịch chi tiêu đã ghi khi trả nợ trước đó vẫn được giữ nguyên. Không thể hoàn tác.`,
     api: {
@@ -273,12 +273,21 @@ function openEditEntryForm(cfg, e, c) {
   const isIncrease = e.kind === cfg.api.increaseKind;
   const txnType = isIncrease ? cfg.increaseTxnType : cfg.decreaseTxnType;
   const txnLabel = isIncrease ? cfg.increaseTxnLabel : cfg.decreaseTxnLabel;
+  // Dòng "trả nợ/thu tiền" (giảm nợ): sửa số tiền vẫn không được VƯỢT QUÁ nợ còn lại — cộng lại
+  // đúng số tiền CŨ của dòng này vào nợ còn lại trước (vì số cũ đã bị trừ rồi), rồi mới so sánh.
+  // VD: nợ còn 200.000, dòng đang sửa trước đó ghi 100.000 -> sửa lên tối đa 300.000 vẫn hợp lệ.
+  const balance = cfg.api.balance(c.id);
+  const maxAmount = isIncrease ? null : balance + e.amount;
   openModal({
     title: isIncrease ? cfg.entryEditIncreaseTitle : cfg.entryEditDecreaseTitle,
     bodyHtml: `
       <div class="field"><label>Ngày</label><input id="entry-date" type="date" value="${e.date}" required/></div>
       <div class="field"><label>${isIncrease ? cfg.entryDescLabel : 'Ghi chú (không bắt buộc)'}</label><input id="entry-desc" value="${(e.description || '').replace(/"/g, '&quot;')}"/></div>
-      <div class="field"><label>Số tiền</label><input id="entry-amount" type="text" inputmode="numeric" value="${formatNumber(e.amount)}" required/></div>
+      <div class="field">
+        <label>Số tiền</label>
+        <input id="entry-amount" type="text" inputmode="numeric" value="${formatNumber(e.amount)}" required/>
+        ${maxAmount != null ? `<div class="field-hint">Tối đa ${formatVND(maxAmount)} (nợ còn lại)</div>` : ''}
+      </div>
       ${addToTxnFieldsHtml('entry', !!e.transactionId, txnType, txnLabel)}
       <div class="field-error" id="entry-error" style="display:none;margin-bottom:10px"></div>
     `,
@@ -293,6 +302,11 @@ function openEditEntryForm(cfg, e, c) {
         const addToTransactions = sheet.querySelector('#entry-add-txn').checked;
         const categoryId = sheet.querySelector('#entry-cat').value;
         const errEl = sheet.querySelector('#entry-error');
+        if (maxAmount != null && amount > maxAmount) {
+          errEl.textContent = `Số tiền không được vượt quá ${formatVND(maxAmount)} (nợ còn lại).`;
+          errEl.style.display = 'block';
+          return;
+        }
         try {
           await cfg.api.updateEntry(e.id, { amount, date, description, categoryId, addToTransactions });
           toast('Đã lưu', 'success');
@@ -354,7 +368,11 @@ function openDecreaseModal(cfg, c, balance) {
     title: cfg.decreaseTitle(c.name),
     bodyHtml: `
       <p class="text-sm text-muted mb-16">${cfg.statusActiveLabel[0].toUpperCase() + cfg.statusActiveLabel.slice(1)}: <b>${formatVND(balance)}</b></p>
-      <div class="field"><label>${cfg.decreaseAmountLabel}</label><input id="pay-amount" type="text" inputmode="numeric" value="${formatNumber(Math.max(0, balance))}"/></div>
+      <div class="field">
+        <label>${cfg.decreaseAmountLabel}</label>
+        <input id="pay-amount" type="text" inputmode="numeric" value="${formatNumber(Math.max(0, balance))}"/>
+        <div class="field-hint">Tối đa ${formatVND(Math.max(0, balance))} (nợ còn lại)</div>
+      </div>
       <div class="field"><label>${cfg.decreaseDateLabel}</label><input id="pay-date" type="date" value="${new Date().toISOString().slice(0, 10)}"/></div>
       ${addToTxnFieldsHtml('pay', false, cfg.decreaseTxnType, cfg.decreaseTxnLabel)}
       <div class="field-error" id="pay-error" style="display:none;margin-bottom:10px"></div>
@@ -369,6 +387,11 @@ function openDecreaseModal(cfg, c, balance) {
         const addToTransactions = sheet.querySelector('#pay-add-txn').checked;
         const categoryId = sheet.querySelector('#pay-cat').value;
         const errEl = sheet.querySelector('#pay-error');
+        if (amount > balance) {
+          errEl.textContent = `Số tiền không được vượt quá ${formatVND(Math.max(0, balance))} (nợ còn lại).`;
+          errEl.style.display = 'block';
+          return;
+        }
         try {
           await cfg.api.addDecrease(c.id, { amount, date, categoryId, addToTransactions });
           toast(`Đã ${cfg.decreaseEntryLabel.toLowerCase()}`, 'success');
