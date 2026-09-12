@@ -9,7 +9,7 @@
 // ghi đều gọi Supabase trước, thành công mới cập nhật cache + notify() để
 // vẽ lại màn hình.
 // ============================================================
-import { genId, colorAt } from './utils.js';
+import { genId, colorAt, formatVND } from './utils.js';
 import { getSupabaseClient, callLoginFunction, callAccountFunction } from './lib/supabaseClient.js';
 import { subscribeThisDevice, unsubscribeThisDevice, getCurrentEndpoint } from './lib/push.js';
 
@@ -267,7 +267,7 @@ function mapPlanRow(row) {
 function mapCreditorRow(row) {
   return {
     id: row.id, name: row.name, note: row.note || '', userId: row.user_id, createdAt: row.created_at,
-    memberUserId: row.member_user_id || null, shared: !!row.shared,
+    memberUserId: row.member_user_id || null, shared: !!row.shared, mirrorDebtorId: row.mirror_debtor_id || null,
   };
 }
 function mapDebtEntryRow(row) {
@@ -275,6 +275,7 @@ function mapDebtEntryRow(row) {
     id: row.id, creditorId: row.creditor_id, kind: row.kind, amount: Number(row.amount),
     date: row.entry_date, description: row.description || '',
     transactionId: row.transaction_id, userId: row.user_id, createdAt: row.created_at, shared: !!row.shared,
+    mirrorEntryId: row.mirror_entry_id || null,
   };
 }
 function mapDebtorRow(row) {
@@ -309,6 +310,18 @@ export async function setOwnPassword(newPassword, opts = {}) {
   const res = await callAccountFunction(session?.sbToken, { type: 'set-own-password', newPassword, mustChangePassword: !!opts.mustChangePassword });
   if (!res.ok) throw new Error(res.reason || 'Không đổi được mật khẩu.');
   setSession({ ...session, mustChangePassword: !!opts.mustChangePassword });
+}
+/** Tự đổi TÊN HIỂN THỊ của chính mình (owner hoặc member đều dùng được) — bảng `users` không cho
+ * client ghi trực tiếp (xem docs/expense-app-setup.md mục 2) nên phải qua Edge Function. */
+export async function setOwnName(name) {
+  const trimmed = (name || '').trim();
+  if (!trimmed) throw new Error('Cần nhập tên hiển thị.');
+  const session = getSession();
+  const res = await callAccountFunction(session?.sbToken, { type: 'set-own-name', name: trimmed });
+  if (!res.ok) throw new Error(res.reason || 'Không đổi được tên.');
+  const u = getUser(session.id);
+  if (u) u.name = trimmed;
+  notify();
 }
 
 // ------------------------------------------------------------
@@ -430,19 +443,65 @@ export async function addTransaction({ type, amount, categoryId, note, date, rec
   state.transactions.unshift(mapTransactionRow({ ...row, created_at: new Date().toISOString() }));
   notify();
 }
+/** Tìm dòng Công nợ (sổ nợ/sổ cho vay) ĐI KÈM 1 giao dịch cụ thể (tạo từ ô Mượn nợ/Trả nợ ở form
+ * Thêm giao dịch, hoặc tick "đưa vào thu/chi" ở trang Công nợ) — dùng để đồng bộ 2 chiều: sửa/xóa
+ * giao dịch ở trang Giao dịch (bình thường) thì dòng Công nợ đi kèm cũng phải sửa/xóa theo, không
+ * để lại dòng "mồ côi" trỏ tới giao dịch không còn tồn tại. */
+function findLinkedDebtOrReceivableEntry(transactionId) {
+  const debtEntry = state.debtEntries.find((e) => e.transactionId === transactionId);
+  if (debtEntry) return { type: 'debt', entry: debtEntry, counterpart: getCreditor(debtEntry.creditorId) };
+  const recvEntry = state.receivableEntries.find((e) => e.transactionId === transactionId);
+  if (recvEntry) return { type: 'receivable', entry: recvEntry, counterpart: getDebtor(recvEntry.debtorId) };
+  return null;
+}
 export async function updateTransaction(id, { type, amount, categoryId, note, date }) {
   const session = getSession();
   const sb = getSupabaseClient(session?.sbToken);
-  const patch = { type, amount: Number(amount) || 0, category_id: categoryId || null, note: note || '', txn_date: date };
+  const newAmount = Number(amount) || 0;
+  const linked = findLinkedDebtOrReceivableEntry(id);
+  // Giao dịch này có kèm 1 dòng Công nợ (Mượn nợ/Trả nợ, hoặc Cho vay/Thu tiền có tích "đưa vào thu/
+  // chi") -> dòng "GIẢM nợ" (trả nợ/thu tiền) sửa số tiền ở đây vẫn KHÔNG được vượt quá nợ còn lại —
+  // cộng lại đúng số tiền CŨ của dòng này vào nợ còn lại trước khi so sánh (giống updateDebtEntry).
+  if (linked && (linked.entry.kind === 'payment' || linked.entry.kind === 'collect')) {
+    const balance = linked.type === 'debt' ? creditorBalance(linked.entry.creditorId) : debtorBalance(linked.entry.debtorId);
+    const maxAmount = balance + linked.entry.amount;
+    if (newAmount > maxAmount) throw new Error(`Số tiền không được vượt quá ${formatVND(maxAmount)} (nợ còn lại).`);
+  }
+  const patch = { type, amount: newAmount, category_id: categoryId || null, note: note || '', txn_date: date };
   const { error } = await sb.from('transactions').update(patch).eq('id', id);
   if (error) throw new Error('Không cập nhật được giao dịch, thử lại sau.');
   const t = getTransaction(id);
-  if (t) Object.assign(t, { type, amount: Number(amount) || 0, categoryId: categoryId || null, note: note || '', date });
+  if (t) Object.assign(t, { type, amount: newAmount, categoryId: categoryId || null, note: note || '', date });
+
+  if (linked) {
+    const table = linked.type === 'debt' ? 'debt_entries' : 'receivable_entries';
+    const { error: entryErr } = await sb.from(table).update({ amount: newAmount, entry_date: date }).eq('id', linked.entry.id);
+    if (entryErr) throw new Error('Đã cập nhật giao dịch nhưng chưa đồng bộ được vào Công nợ, thử lại sau.');
+    linked.entry.amount = newAmount;
+    linked.entry.date = date;
+    if (linked.type === 'debt' && linked.entry.mirrorEntryId) {
+      await mirrorDebtUpdate(linked.entry.mirrorEntryId, { amount: newAmount, date, description: linked.entry.description }, session?.sbToken);
+    }
+  }
   notify();
 }
 export async function deleteTransaction(id) {
   const session = getSession();
   const sb = getSupabaseClient(session?.sbToken);
+  // Xóa dòng Công nợ đi kèm TRƯỚC (nếu có) -> chỉ xóa giao dịch nếu bước này thành công, tránh để
+  // lại dòng Công nợ mồ côi khi thao tác nửa chừng bị lỗi mạng.
+  const linked = findLinkedDebtOrReceivableEntry(id);
+  if (linked) {
+    const table = linked.type === 'debt' ? 'debt_entries' : 'receivable_entries';
+    const { error: linkErr } = await sb.from(table).delete().eq('id', linked.entry.id);
+    if (linkErr) throw new Error('Không xóa được dòng Công nợ liên kết, thử lại sau.');
+    if (linked.type === 'debt') {
+      state.debtEntries = state.debtEntries.filter((e) => e.id !== linked.entry.id);
+      if (linked.entry.mirrorEntryId) await mirrorDebtDelete(linked.entry.mirrorEntryId, session?.sbToken);
+    } else {
+      state.receivableEntries = state.receivableEntries.filter((e) => e.id !== linked.entry.id);
+    }
+  }
   const { error } = await sb.from('transactions').delete().eq('id', id);
   if (error) throw new Error('Không xóa được giao dịch, thử lại sau.');
   state.transactions = state.transactions.filter((t) => t.id !== id);
@@ -770,6 +829,36 @@ async function ensureCreditor(name, sb, session, { shared = false, memberUserId 
   state.creditors.push(c);
   return c;
 }
+/** Mượn nợ 1 THÀNH VIÊN trong sổ (memberUserId) -> tự "điền hộ" luôn vào sổ "Người khác nợ tôi"
+ * RIÊNG TƯ của đúng thành viên đó (kind='lend'), khỏi phải tự gõ tay lại 2 lần. Trả nợ cho chủ nợ
+ * là 1 thành viên (memberUserId đã có mirrorDebtorId từ lần mượn trước) cũng tự thêm dòng "collect"
+ * tương ứng để trừ nợ bên sổ riêng của họ luôn — 2 sổ (Nợ chung + sổ riêng của thành viên) LUÔN khớp
+ * nhau, không cần nhập tay từng cái. Ghi vào bảng RIÊNG TƯ của NGƯỜI KHÁC nên RLS chặn viết trực
+ * tiếp — phải nhờ Edge Function (service_role) làm hộ, xem type 'debt-mirror-add' ở
+ * supabase/functions/create-account/index.ts. LUÔN "best effort": mirror lỗi chỉ console.warn, sổ
+ * Nợ chung (nguồn dữ liệu chính) vẫn đúng dù mirror thất bại. */
+async function mirrorDebtAdd(creditor, { kind, amount, date, description, borrowerName, sbToken }) {
+  if (!creditor.memberUserId || creditor.memberUserId === getSession()?.id) return null;
+  try {
+    const res = await callAccountFunction(sbToken, {
+      type: 'debt-mirror-add', memberUserId: creditor.memberUserId, debtorId: creditor.mirrorDebtorId,
+      name: borrowerName, kind, amount, date, description,
+    });
+    return res.ok ? { debtorId: res.debtorId, entryId: res.entryId } : null;
+  } catch (e) { console.warn('mirrorDebtAdd lỗi:', e); return null; }
+}
+/** Đồng bộ số tiền/ngày/ghi chú sang đúng dòng mirror (xem mirrorDebtAdd) khi sửa lại dòng gốc bên Nợ chung. */
+async function mirrorDebtUpdate(entryId, { amount, date, description }, sbToken) {
+  if (!entryId) return;
+  try { await callAccountFunction(sbToken, { type: 'debt-mirror-update', entryId, amount, date, description }); }
+  catch (e) { console.warn('mirrorDebtUpdate lỗi:', e); }
+}
+/** Xóa dòng mirror (xem mirrorDebtAdd) khi dòng gốc bên Nợ chung bị xóa. */
+async function mirrorDebtDelete(entryId, sbToken) {
+  if (!entryId) return;
+  try { await callAccountFunction(sbToken, { type: 'debt-mirror-delete', entryId }); }
+  catch (e) { console.warn('mirrorDebtDelete lỗi:', e); }
+}
 /** Ghi nợ mới. Truyền creditorId khi đã biết đúng chủ nợ (VD đang ở trang chi tiết 1 chủ nợ) — dùng
  * đúng sổ đó dù đang nợ hay đã trả hết. Không thì truyền creditorName (chủ nợ ngoài app, gõ tên tự
  * do) HOẶC memberUserId (chủ nợ là 1 THÀNH VIÊN trong sổ — tự lấy tên hiển thị của thành viên đó,
@@ -817,7 +906,24 @@ export async function addDebtCharge({ creditorId, creditorName, memberUserId, sh
   const { error } = await sb.from('debt_entries').insert(row);
   if (error) throw new Error('Không lưu được ghi nợ, thử lại sau.');
   if (txnRow) state.transactions.unshift(mapTransactionRow({ ...txnRow, created_at: new Date().toISOString() }));
-  state.debtEntries.unshift(mapDebtEntryRow({ ...row, created_at: new Date().toISOString() }));
+  const entry = mapDebtEntryRow({ ...row, created_at: new Date().toISOString() });
+  state.debtEntries.unshift(entry);
+
+  // Mượn của 1 thành viên trong sổ -> tự điền hộ vào sổ "Người khác nợ tôi" riêng của họ (xem mirrorDebtAdd()).
+  if (creditor.memberUserId) {
+    const mirror = await mirrorDebtAdd(creditor, {
+      kind: 'lend', amount: chargeAmount, date: entryDate, description,
+      borrowerName: getUser(session.id)?.name || 'Người dùng', sbToken: session?.sbToken,
+    });
+    if (mirror) {
+      if (!creditor.mirrorDebtorId) {
+        await sb.from('creditors').update({ mirror_debtor_id: mirror.debtorId }).eq('id', creditor.id);
+        creditor.mirrorDebtorId = mirror.debtorId;
+      }
+      await sb.from('debt_entries').update({ mirror_entry_id: mirror.entryId }).eq('id', entry.id);
+      entry.mirrorEntryId = mirror.entryId;
+    }
+  }
   notify();
   return { creditorId: creditor.id, transactionId: txnRow?.id || null };
 }
@@ -830,6 +936,8 @@ export async function addDebtPayment(creditorId, { amount, date, categoryId, des
   const sb = getSupabaseClient(session?.sbToken);
   const payAmount = Number(amount) || 0;
   if (payAmount <= 0) throw new Error('Số tiền trả phải lớn hơn 0.');
+  const balance = creditorBalance(creditorId);
+  if (payAmount > balance) throw new Error(`Số tiền không được vượt quá ${formatVND(balance)} (nợ còn lại).`);
   const payDate = date || new Date().toISOString().slice(0, 10);
 
   let txnRow = null;
@@ -849,7 +957,21 @@ export async function addDebtPayment(creditorId, { amount, date, categoryId, des
   if (entryErr) throw new Error(txnRow ? 'Đã tạo giao dịch nhưng chưa lưu được vào sổ nợ, thử lại sau.' : 'Không lưu được vào sổ nợ, thử lại sau.');
 
   if (txnRow) state.transactions.unshift(mapTransactionRow({ ...txnRow, created_at: new Date().toISOString() }));
-  state.debtEntries.unshift(mapDebtEntryRow({ ...row, created_at: new Date().toISOString() }));
+  const entry = mapDebtEntryRow({ ...row, created_at: new Date().toISOString() });
+  state.debtEntries.unshift(entry);
+
+  // Trả cho 1 chủ nợ là thành viên trong sổ ĐÃ có mirror (đã từng mượn -> đã tự điền hộ sổ riêng của
+  // họ, xem addDebtCharge) -> tự thêm dòng "collect" bên sổ riêng đó luôn, cho khớp với Nợ chung.
+  if (creditor.memberUserId && creditor.mirrorDebtorId) {
+    const mirror = await mirrorDebtAdd(creditor, {
+      kind: 'collect', amount: payAmount, date: payDate, description,
+      borrowerName: getUser(session.id)?.name || 'Người dùng', sbToken: session?.sbToken,
+    });
+    if (mirror) {
+      await sb.from('debt_entries').update({ mirror_entry_id: mirror.entryId }).eq('id', entry.id);
+      entry.mirrorEntryId = mirror.entryId;
+    }
+  }
   notify();
   return { transactionId: txnRow?.id || null };
 }
@@ -863,6 +985,13 @@ export async function updateDebtEntry(id, { amount, date, description, categoryI
   const sb = getSupabaseClient(session?.sbToken);
   const newAmount = Number(amount) || 0;
   if (newAmount <= 0) throw new Error('Số tiền phải lớn hơn 0.');
+  if (e.kind === 'payment') {
+    // Dòng TRẢ nợ (giảm nợ): sửa số tiền vẫn không được vượt quá nợ còn lại — cộng lại đúng số tiền
+    // CŨ của dòng này vào nợ còn lại trước (vì số cũ đã bị trừ rồi) rồi mới so sánh. VD: nợ còn
+    // 200.000, dòng đang sửa vốn ghi 100.000 -> sửa lên tối đa 300.000 vẫn hợp lệ.
+    const maxAmount = creditorBalance(e.creditorId) + e.amount;
+    if (newAmount > maxAmount) throw new Error(`Số tiền không được vượt quá ${formatVND(maxAmount)} (nợ còn lại).`);
+  }
   const newDate = date || e.date;
   const patch = { amount: newAmount, entry_date: newDate, description: description || '' };
   const txnType = e.kind === 'charge' ? 'income' : 'expense';
@@ -895,9 +1024,13 @@ export async function updateDebtEntry(id, { amount, date, description, categoryI
   const { error } = await sb.from('debt_entries').update(patch).eq('id', id);
   if (error) throw new Error('Không cập nhật được, thử lại sau.');
   Object.assign(e, { amount: newAmount, date: newDate, description: patch.description, transactionId: newTransactionId });
+  if (creditor?.memberUserId && e.mirrorEntryId) {
+    await mirrorDebtUpdate(e.mirrorEntryId, { amount: newAmount, date: newDate, description: patch.description }, session?.sbToken);
+  }
   notify();
 }
-/** Xóa 1 dòng ghi nợ/trả nợ. Nếu dòng có kèm giao dịch chi tiêu thật (đã tích "đưa vào chi tiêu") thì xóa luôn giao dịch đó. */
+/** Xóa 1 dòng ghi nợ/trả nợ. Nếu dòng có kèm giao dịch chi tiêu thật (đã tích "đưa vào chi tiêu") thì
+ * xóa luôn giao dịch đó, và xóa luôn dòng mirror bên sổ riêng của thành viên nếu có (xem mirrorDebtAdd). */
 export async function deleteDebtEntry(id) {
   const e = state.debtEntries.find((x) => x.id === id);
   if (!e) throw new Error('Không tìm thấy dòng sổ nợ.');
@@ -910,6 +1043,7 @@ export async function deleteDebtEntry(id) {
     state.transactions = state.transactions.filter((t) => t.id !== e.transactionId);
   }
   state.debtEntries = state.debtEntries.filter((x) => x.id !== id);
+  if (e.mirrorEntryId) await mirrorDebtDelete(e.mirrorEntryId, session?.sbToken);
   notify();
 }
 export async function updateCreditor(id, { name, note }) {

@@ -27,11 +27,14 @@ Web app quản lý chi tiêu & kế hoạch ngân sách hàng tháng cho gia đ�
 - **Công nợ** (riêng tư của từng người dùng, không hiện ở Tổng quan, trừ **Nợ chung**): theo dõi 3
   chiều — **"Tôi nợ"** (mình nợ ai), **"Người khác nợ tôi"** (cho vay/bán chịu), và **"Nợ chung"**
   (khoản nợ của quỹ chung, MỌI thành viên cùng xem/sửa) — có thể tùy chọn đưa từng khoản vào thu/chi
-  thật. Chọn danh mục **"Mượn nợ"/"Trả nợ"** ngay khi Thêm giao dịch để ghi thẳng vào Công nợ khỏi
-  cần vào tay trang riêng — "Mượn nợ" luôn ghi vào **Nợ chung** (xem
-  `docs/expense-app-setup.md` mục 12).
+  thật, số tiền trả/thu KHÔNG được vượt quá số đang còn nợ (kể cả lúc sửa lại). Chọn danh mục
+  **"Mượn nợ"/"Trả nợ"** ngay khi Thêm giao dịch để ghi thẳng vào Công nợ khỏi cần vào tay trang
+  riêng — "Mượn nợ" luôn ghi vào **Nợ chung**; nếu chủ nợ là 1 **thành viên trong sổ**, khoản đó còn
+  tự "điền hộ" sang sổ **"Người khác nợ tôi"** riêng của đúng thành viên đó (trả nợ/xóa cũng tự đồng
+  bộ theo, khỏi phải ghi tay 2 lần) — xem `docs/expense-app-setup.md` mục 12-13.
 - **Quản lý User**: chỉ chủ sổ thấy — tạo tài khoản thành viên mới (mật khẩu tạm tự sinh), cấp lại
-  mật khẩu, xóa tài khoản (không mất giao dịch đã ghi trong sổ chung).
+  mật khẩu, xóa tài khoản (không mất giao dịch đã ghi trong sổ chung). Mỗi người (owner lẫn member)
+  tự đổi **tên hiển thị** của mình bất cứ lúc nào ở mục **Đổi mật khẩu**.
 - **Thông báo**: bật Thông báo đẩy (Web Push) trên từng thiết bị, soạn & gửi ngay 1 thông báo cho
   1 người khác/tất cả mọi người/chính mình, hoặc đặt **lịch nhắc** tới đúng ngày giờ mới tự động
   gửi — nhận được cả khi không mở app (cần cấu hình thêm, xem `docs/expense-app-setup.md` mục 10).

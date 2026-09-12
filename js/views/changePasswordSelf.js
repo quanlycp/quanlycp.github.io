@@ -2,13 +2,26 @@ import * as S from '../state.js';
 import { pageHeader } from '../components/shell.js';
 import { toast } from '../components/toast.js';
 
-/** Màn tự đổi mật khẩu (tự chọn, dùng bất cứ lúc nào) — dùng chung cho owner lẫn member. */
+/** Màn tự đổi tên hiển thị + mật khẩu (tự chọn, dùng bất cứ lúc nào) — dùng chung cho owner lẫn member. */
 export function renderHeader(headerEl) {
   headerEl.innerHTML = pageHeader({ title: 'Đổi mật khẩu' });
 }
 
 export function render(contentEl) {
+  const session = S.getSession();
+  const me = S.getUser(session?.id);
   contentEl.innerHTML = `
+    <div class="card card-pad mb-16" style="max-width:420px">
+      <p class="text-sm text-muted mb-16">Tên hiển thị của bạn ở khắp nơi trong app (giao dịch bạn ghi, chọn làm chủ nợ/người nợ...).</p>
+      <form id="self-name-form">
+        <div class="field">
+          <label>Tên hiển thị</label>
+          <input name="name" value="${(me?.name || '').replace(/"/g, '&quot;')}" required/>
+        </div>
+        <div class="field-error" id="self-name-error" style="display:none;margin-bottom:10px"></div>
+        <button class="btn btn-outline btn-block" type="submit">Lưu tên hiển thị</button>
+      </form>
+    </div>
     <div class="card card-pad" style="max-width:420px">
       <p class="text-sm text-muted mb-16">Đặt mật khẩu mới cho tài khoản của bạn. Cần nhập đúng mật khẩu hiện tại để xác nhận.</p>
       <form id="self-pw-form">
@@ -29,6 +42,17 @@ export function render(contentEl) {
       </form>
     </div>
   `;
+
+  contentEl.querySelector('#self-name-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const name = new FormData(e.target).get('name').toString().trim();
+    const errEl = contentEl.querySelector('#self-name-error');
+    errEl.style.display = 'none';
+    try {
+      await S.setOwnName(name);
+      toast('Đã lưu tên hiển thị', 'success');
+    } catch (err) { errEl.textContent = err.message || 'Có lỗi xảy ra, thử lại sau.'; errEl.style.display = 'block'; }
+  });
 
   contentEl.querySelector('#self-pw-form').addEventListener('submit', async (e) => {
     e.preventDefault();
