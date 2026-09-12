@@ -98,21 +98,21 @@ export function openTransactionForm({ transaction, defaultType = 'expense', onSa
         errEl.style.display = 'none';
         btn.disabled = true;
         try {
-          let borrowResult = null;
+          let mirrorResult = null;
           if (isAddMode && category?.special === 'borrow') {
-            borrowResult = await submitBorrow(sheet, { amount, date, description: note, categoryId });
+            mirrorResult = await submitBorrow(sheet, { amount, date, description: note, categoryId });
           } else if (isAddMode && category?.special === 'repay') {
-            await submitRepay(sheet, { amount, date, description: note, categoryId });
+            mirrorResult = await submitRepay(sheet, { amount, date, description: note, categoryId });
           } else if (transaction) {
             await S.updateTransaction(transaction.id, { type, amount, categoryId, date, note });
           } else {
             await S.addTransaction({ type, amount, categoryId, date, note });
           }
           toast(transaction ? 'Đã lưu thay đổi' : 'Đã thêm giao dịch', 'success');
-          // Mượn của 1 thành viên trong sổ nhưng bước "điền hộ" sang sổ riêng của họ thất bại (xem
-          // S.addDebtCharge) -> báo rõ cho người dùng, đừng để im lặng tưởng nhầm app có lỗi khác.
-          if (borrowResult?.mirrorFailed) {
-            toast('Đã ghi vào Nợ chung, nhưng CHƯA điền được vào sổ riêng của thành viên đó — kiểm tra lại đã chạy đủ SQL/deploy Edge Function mới chưa (xem docs mục 13).', 'error');
+          // Mượn/trả nợ với 1 thành viên trong sổ nhưng bước "điền hộ" sang sổ riêng của họ thất bại
+          // (xem S.addDebtCharge/addDebtPayment) -> báo rõ, đừng để im lặng tưởng nhầm app lỗi khác.
+          if (mirrorResult?.mirrorFailed) {
+            toast('Đã ghi vào Nợ chung, nhưng CHƯA điền/đồng bộ được vào sổ riêng của thành viên đó — kiểm tra lại đã chạy đủ SQL/deploy Edge Function mới chưa (xem docs mục 13).', 'error');
           }
           close();
           onSaved && onSaved();
@@ -238,5 +238,5 @@ async function submitRepay(sheet, { amount, date, description, categoryId }) {
   }
   const balance = Number(select.selectedOptions[0].dataset.balance);
   if (amount > balance) throw new Error(`Số tiền trả không được vượt quá nợ còn lại (${formatVND(balance)}).`);
-  await S.addDebtPayment(creditorId, { amount, date, description, categoryId, addToTransactions: true });
+  return await S.addDebtPayment(creditorId, { amount, date, description, categoryId, addToTransactions: true });
 }
