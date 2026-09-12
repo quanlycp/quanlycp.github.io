@@ -524,9 +524,81 @@ create policy "own receivable_entries only" on receivable_entries
 Không cần deploy lại Edge Function cho mục này (không có thao tác nhạy cảm nào mới) — trình duyệt
 đọc/ghi thẳng 2 bảng trên qua Row Level Security, giống `creditors`/`debt_entries`.
 
-## 12. Việc còn lại
+## 12. Bổ sung sau: Mượn nợ/Trả nợ ngay từ Giao dịch + Nợ chung (quỹ chung) (nếu project đã tạo trước khi có mục này)
+
+Tính năng: khi **Thêm giao dịch**, chọn danh mục **"Mượn nợ"** (khoản thu) hoặc **"Trả nợ"** (khoản
+chi) — 2 danh mục hệ thống tự tạo sẵn — app tự hiện thêm các ô liên quan tới **Công nợ**, khỏi phải
+tự vào tay trang Công nợ ghi lại lần nữa:
+
+- **Mượn nợ**: chọn **chủ nợ** — gõ tên tự do, hoặc chọn nhanh tên 1 thành viên trong sổ cho tiện
+  (chỉ để khỏi gõ tay, không có gì khác biệt). Khoản này LUÔN LUÔN ghi vào **Công nợ → Nợ chung** —
+  MỌI thành viên (owner lẫn member) đều xem/sửa được, không cần chọn gì thêm.
+- **Trả nợ**: chọn đúng khoản đang nợ (trong Nợ chung, hoặc 1 khoản riêng tư cũ đã ghi từ trang Công
+  nợ trước đây) để trừ dần, hoặc chọn **"Trả khoản nợ khác (không theo dõi)"** nếu là khoản nợ cũ
+  không ghi trong app — lúc đó chỉ ghi 1 khoản chi bình thường, không trừ vào sổ nợ nào cả.
+
+### 12.1 Tạo cột mới + cập nhật RLS (chạy trong SQL Editor)
+
+```sql
+-- 1) Đánh dấu 2 danh mục hệ thống "Mượn nợ"/"Trả nợ" — app tự tạo 2 dòng này lúc đăng nhập nếu
+-- project chưa có (xem js/state.js ensureSpecialCategories), không cần tự tạo tay ở đây.
+alter table categories add column if not exists special text check (special in ('borrow','repay'));
+
+-- 2) creditors/debtors: cho phép trỏ thẳng tới 1 THÀNH VIÊN trong sổ (member_user_id, chỉ để hiện
+-- rõ "khoản này liên quan thành viên nào" — không tự đồng bộ gì sang tài khoản khác), và đánh dấu
+-- "shared" (khoản nợ CHUNG của quỹ, mọi thành viên cùng xem/sửa) thay vì riêng tư từng người như mặc
+-- định. debt_entries/receivable_entries có cột "shared" riêng (chép lại từ chủ nợ/người nợ lúc ghi)
+-- để RLS không phải join sang bảng cha.
+alter table creditors add column if not exists member_user_id text references users(id) on delete set null;
+alter table creditors add column if not exists shared boolean not null default false;
+alter table debt_entries add column if not exists shared boolean not null default false;
+alter table debtors add column if not exists member_user_id text references users(id) on delete set null;
+alter table debtors add column if not exists shared boolean not null default false;
+alter table receivable_entries add column if not exists shared boolean not null default false;
+
+create index if not exists creditors_shared_idx on creditors (shared);
+create index if not exists debtors_shared_idx on debtors (shared);
+
+-- 3) RLS: thêm điều kiện "shared = true" bên cạnh "đúng chủ" — dòng KHÔNG shared vẫn riêng tư như
+-- cũ, dòng "shared" thì MỌI thành viên (owner lẫn member) xem/sửa/xóa được, giống categories/
+-- transactions. Xóa 4 policy cũ (chỉ "đúng chủ") thay bằng 4 policy mới mỗi bảng.
+drop policy if exists "own creditors only" on creditors;
+create policy "creditors select own or shared" on creditors for select using (shared or (auth.jwt() ->> 'row_id') = user_id);
+create policy "creditors insert own or shared" on creditors for insert with check (shared or (auth.jwt() ->> 'row_id') = user_id);
+create policy "creditors update own or shared" on creditors for update using (shared or (auth.jwt() ->> 'row_id') = user_id) with check (shared or (auth.jwt() ->> 'row_id') = user_id);
+create policy "creditors delete own or shared" on creditors for delete using (shared or (auth.jwt() ->> 'row_id') = user_id);
+
+drop policy if exists "own debt_entries only" on debt_entries;
+create policy "debt_entries select own or shared" on debt_entries for select using (shared or (auth.jwt() ->> 'row_id') = user_id);
+create policy "debt_entries insert own or shared" on debt_entries for insert with check (shared or (auth.jwt() ->> 'row_id') = user_id);
+create policy "debt_entries update own or shared" on debt_entries for update using (shared or (auth.jwt() ->> 'row_id') = user_id) with check (shared or (auth.jwt() ->> 'row_id') = user_id);
+create policy "debt_entries delete own or shared" on debt_entries for delete using (shared or (auth.jwt() ->> 'row_id') = user_id);
+
+drop policy if exists "own debtors only" on debtors;
+create policy "debtors select own or shared" on debtors for select using (shared or (auth.jwt() ->> 'row_id') = user_id);
+create policy "debtors insert own or shared" on debtors for insert with check (shared or (auth.jwt() ->> 'row_id') = user_id);
+create policy "debtors update own or shared" on debtors for update using (shared or (auth.jwt() ->> 'row_id') = user_id) with check (shared or (auth.jwt() ->> 'row_id') = user_id);
+create policy "debtors delete own or shared" on debtors for delete using (shared or (auth.jwt() ->> 'row_id') = user_id);
+
+drop policy if exists "own receivable_entries only" on receivable_entries;
+create policy "receivable_entries select own or shared" on receivable_entries for select using (shared or (auth.jwt() ->> 'row_id') = user_id);
+create policy "receivable_entries insert own or shared" on receivable_entries for insert with check (shared or (auth.jwt() ->> 'row_id') = user_id);
+create policy "receivable_entries update own or shared" on receivable_entries for update using (shared or (auth.jwt() ->> 'row_id') = user_id) with check (shared or (auth.jwt() ->> 'row_id') = user_id);
+create policy "receivable_entries delete own or shared" on receivable_entries for delete using (shared or (auth.jwt() ->> 'row_id') = user_id);
+```
+
+Không cần deploy lại Edge Function cho mục này — mọi thao tác đều đi thẳng qua Row Level Security ở
+trên (giống `creditors`/`debt_entries` gốc).
+
+### 12.2 Việc còn lại cho mục này
+
+- [ ] Sau khi chạy SQL, đăng xuất/đăng nhập lại (hoặc tải lại trang) để app tự tạo 2 danh mục "Mượn
+      nợ"/"Trả nợ" nếu chưa có.
+
+## 13. Việc còn lại
 
 - [ ] Đổi mật khẩu owner ngay sau lần đăng nhập đầu tiên (app tự bắt đổi).
 - [ ] Rà soát dữ liệu chi tiêu thật trước khi coi là "đang dùng thật".
 - [ ] (Tùy chọn) Làm theo mục 10 nếu muốn dùng Thông báo đẩy/lịch nhắc tự động.
 - [ ] (Tùy chọn) Làm theo mục 11 nếu muốn dùng "Công nợ phải thu" (người khác nợ mình).
+- [ ] (Tùy chọn) Làm theo mục 12 nếu muốn Mượn/Trả nợ ngay từ Giao dịch + Nợ chung.

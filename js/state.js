@@ -31,6 +31,15 @@ const DEFAULT_CATEGORIES = [
   { name: 'Thu nhập khác', type: 'income', icon: 'trendingUp' },
 ];
 
+// 2 danh mục HỆ THỐNG đặc biệt — chọn đúng 2 danh mục này lúc Thêm giao dịch sẽ tự hiện thêm các ô
+// liên quan tới Công nợ (chọn chủ nợ/người nợ, đánh dấu nợ chung...), xem txnForm.js. Tự tạo lúc
+// đăng nhập nếu project chưa có (xem ensureSpecialCategories bên dưới) — không tạo qua màn "Thêm
+// danh mục" thường vì cột `special` không có trong form đó (tránh người dùng tự tạo nhầm thêm).
+const SPECIAL_CATEGORIES = [
+  { name: 'Mượn nợ', type: 'income', icon: 'creditCard', special: 'borrow' },
+  { name: 'Trả nợ', type: 'expense', icon: 'creditCard', special: 'repay' },
+];
+
 let state = null;
 const listeners = new Set();
 function notify() { persist(); listeners.forEach((fn) => fn()); }
@@ -181,15 +190,30 @@ async function loadSessionData(token) {
   state.notifications = (notiRows || []).map(mapNotificationRow);
   state.notificationReads = (readRows || []).map((r) => r.notification_id);
   if (state.categories.length === 0) await seedDefaultCategories(sb);
+  await ensureSpecialCategories(sb);
 }
 
-/** Lần đầu tiên chưa có danh mục nào (database Supabase mới toanh) -> tự tạo sẵn 1 bộ danh mục thường dùng, đỡ phải tự gõ từ đầu. */
+/** Lần đầu tiên chưa có danh mục nào (database Supabase mới toanh) -> tự tạo sẵn 1 bộ danh mục thường dùng + 2 danh mục hệ thống "Mượn nợ"/"Trả nợ", đỡ phải tự gõ từ đầu. */
 async function seedDefaultCategories(sb) {
-  const rows = DEFAULT_CATEGORIES.map((c, i) => ({
-    id: genId('cat'), name: c.name, type: c.type, icon: c.icon, color: colorAt(i), sort_order: i,
+  const all = [...DEFAULT_CATEGORIES, ...SPECIAL_CATEGORIES];
+  const rows = all.map((c, i) => ({
+    id: genId('cat'), name: c.name, type: c.type, icon: c.icon, color: colorAt(i), sort_order: i, special: c.special || null,
   }));
   const { error } = await sb.from('categories').insert(rows);
   if (!error) state.categories = rows.map(mapCategoryRow);
+}
+/** Project ĐÃ có danh mục từ trước (tạo trước khi có tính năng Mượn/Trả nợ) -> tự bù thêm đúng 2
+ * danh mục hệ thống còn thiếu (không đụng gì tới danh mục người dùng đã tự tạo/sửa). Chạy mỗi lần
+ * đăng nhập, tự bỏ qua nếu đã đủ — an toàn để gọi lặp lại nhiều lần. */
+async function ensureSpecialCategories(sb) {
+  const missing = SPECIAL_CATEGORIES.filter((sc) => !state.categories.some((c) => c.special === sc.special));
+  if (!missing.length) return;
+  const startOrder = state.categories.length;
+  const rows = missing.map((c, i) => ({
+    id: genId('cat'), name: c.name, type: c.type, icon: c.icon, color: colorAt(startOrder + i), sort_order: startOrder + i, special: c.special,
+  }));
+  const { error } = await sb.from('categories').insert(rows);
+  if (!error) state.categories.push(...rows.map(mapCategoryRow));
 }
 
 function mapUserProfileRow(row) {
@@ -199,7 +223,7 @@ function mapCategoryRow(row) {
   return {
     id: row.id, name: row.name, type: row.type, icon: row.icon || 'tag', color: row.color || '#2563eb',
     monthlyBudget: row.monthly_budget != null ? Number(row.monthly_budget) : null,
-    sortOrder: row.sort_order || 0, active: row.active !== false,
+    sortOrder: row.sort_order || 0, active: row.active !== false, special: row.special || null,
   };
 }
 function mapTransactionRow(row) {
@@ -232,23 +256,29 @@ function mapPlanRow(row) {
   };
 }
 function mapCreditorRow(row) {
-  return { id: row.id, name: row.name, note: row.note || '', userId: row.user_id, createdAt: row.created_at };
+  return {
+    id: row.id, name: row.name, note: row.note || '', userId: row.user_id, createdAt: row.created_at,
+    memberUserId: row.member_user_id || null, shared: !!row.shared,
+  };
 }
 function mapDebtEntryRow(row) {
   return {
     id: row.id, creditorId: row.creditor_id, kind: row.kind, amount: Number(row.amount),
     date: row.entry_date, description: row.description || '',
-    transactionId: row.transaction_id, userId: row.user_id, createdAt: row.created_at,
+    transactionId: row.transaction_id, userId: row.user_id, createdAt: row.created_at, shared: !!row.shared,
   };
 }
 function mapDebtorRow(row) {
-  return { id: row.id, name: row.name, note: row.note || '', userId: row.user_id, createdAt: row.created_at };
+  return {
+    id: row.id, name: row.name, note: row.note || '', userId: row.user_id, createdAt: row.created_at,
+    memberUserId: row.member_user_id || null, shared: !!row.shared,
+  };
 }
 function mapReceivableEntryRow(row) {
   return {
     id: row.id, debtorId: row.debtor_id, kind: row.kind, amount: Number(row.amount),
     date: row.entry_date, description: row.description || '',
-    transactionId: row.transaction_id, userId: row.user_id, createdAt: row.created_at,
+    transactionId: row.transaction_id, userId: row.user_id, createdAt: row.created_at, shared: !!row.shared,
   };
 }
 function mapNotificationRow(row) {
@@ -310,6 +340,9 @@ export function listCategories(filters = {}) {
   return list.slice().sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, 'vi'));
 }
 export function getCategory(id) { return state.categories.find((c) => c.id === id); }
+/** Tìm danh mục hệ thống "Mượn nợ" (special='borrow') hoặc "Trả nợ" (special='repay') — dùng để tự
+ * mở thêm ô Công nợ trong form Thêm giao dịch khi người dùng chọn đúng danh mục này. */
+export function getCategoryBySpecial(special) { return state.categories.find((c) => c.special === special); }
 
 export async function upsertCategory({ id, name, type, icon, color, monthlyBudget }) {
   const session = getSession();
@@ -667,9 +700,12 @@ function entriesOf(creditorId) { return state.debtEntries.filter((e) => e.credit
 export function creditorBalance(creditorId) {
   return entriesOf(creditorId).reduce((s, e) => s + (e.kind === 'charge' ? e.amount : -e.amount), 0);
 }
-/** Danh sách chủ nợ kèm số dư còn nợ + ngày hoạt động gần nhất, mới nhất trước. filters.status: 'active' (còn nợ) | 'paid' (đã trả hết). */
+/** Danh sách chủ nợ kèm số dư còn nợ + ngày hoạt động gần nhất, mới nhất trước.
+ * filters.status: 'active' (còn nợ) | 'paid' (đã trả hết).
+ * filters.shared: false/bỏ qua = CHỈ sổ riêng tư của mình (mặc định, giữ đúng hành vi cũ); true =
+ * CHỈ sổ "Nợ chung" (mọi thành viên cùng xem/sửa) — 2 loại không bao giờ trộn chung 1 danh sách. */
 export function listCreditors(filters = {}) {
-  let list = state.creditors.map((c) => {
+  let list = state.creditors.filter((c) => !!c.shared === !!filters.shared).map((c) => {
     const entries = entriesOf(c.id);
     const lastDate = entries.reduce((m, e) => (e.date > m ? e.date : m), '');
     return { ...c, balance: creditorBalance(c.id), lastDate, entryCount: entries.length };
@@ -680,10 +716,10 @@ export function listCreditors(filters = {}) {
 }
 export function getCreditor(id) { return state.creditors.find((c) => c.id === id); }
 /** Toàn bộ TÊN chủ nợ đã dùng qua, không trùng (kể cả đã "đã trả hết") — để gợi ý lúc ghi nợ mới, hoạt động gần nhất trước. */
-export function listCreditorNames() {
+export function listCreditorNames(shared = false) {
   const seen = new Set();
   const names = [];
-  listCreditors().forEach((c) => {
+  listCreditors({ shared }).forEach((c) => {
     const key = c.name.trim().toLowerCase();
     if (!seen.has(key)) { seen.add(key); names.push(c.name); }
   });
@@ -693,21 +729,32 @@ export function listCreditorNames() {
 export function listDebtEntries(creditorId) {
   return entriesOf(creditorId).sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt));
 }
-/** Tổng còn nợ của TẤT CẢ chủ nợ (của riêng người đang đăng nhập). */
+/** Tổng còn nợ RIÊNG TƯ của mình (không tính "Nợ chung" — xem totalSharedDebtRemaining). */
 export function totalDebtRemaining() {
-  return state.creditors.reduce((s, c) => s + Math.max(0, creditorBalance(c.id)), 0);
+  return state.creditors.filter((c) => !c.shared).reduce((s, c) => s + Math.max(0, creditorBalance(c.id)), 0);
+}
+/** Tổng còn nợ của "Nợ chung" (quỹ chung, mọi thành viên cùng thấy con số này). */
+export function totalSharedDebtRemaining() {
+  return state.creditors.filter((c) => c.shared).reduce((s, c) => s + Math.max(0, creditorBalance(c.id)), 0);
 }
 
-/** Chỉ tìm chủ nợ CÒN ĐANG NỢ (balance > 0) theo tên — chủ nợ đã "đã trả hết" không tính, để lần
- * ghi nợ mới cùng tên KHÔNG bị chồng vào sổ cũ đã đóng, mà tự mở 1 sổ nợ mới (cùng tên, id khác). */
-function findOpenCreditorByName(name) {
-  const key = name.trim().toLowerCase();
-  return state.creditors.find((c) => c.name.trim().toLowerCase() === key && creditorBalance(c.id) > 0);
+/** Chỉ tìm chủ nợ CÒN ĐANG NỢ (balance > 0) trong ĐÚNG 1 sổ (riêng tư hoặc Nợ chung, không lẫn
+ * nhau) — ưu tiên khớp theo `memberUserId` (chủ nợ là 1 thành viên cụ thể trong sổ) nếu có truyền,
+ * không thì khớp theo tên. Chủ nợ đã "đã trả hết" không tính, để lần ghi nợ mới cùng tên/thành viên
+ * KHÔNG bị chồng vào sổ cũ đã đóng, mà tự mở 1 sổ nợ mới. */
+function findOpenCreditorByName(name, { shared = false, memberUserId = null } = {}) {
+  const key = (name || '').trim().toLowerCase();
+  const pool = state.creditors.filter((c) => !!c.shared === !!shared && creditorBalance(c.id) > 0);
+  if (memberUserId) {
+    const byMember = pool.find((c) => c.memberUserId === memberUserId);
+    if (byMember) return byMember;
+  }
+  return pool.find((c) => c.name.trim().toLowerCase() === key);
 }
-async function ensureCreditor(name, sb, session) {
-  const existing = findOpenCreditorByName(name);
+async function ensureCreditor(name, sb, session, { shared = false, memberUserId = null } = {}) {
+  const existing = findOpenCreditorByName(name, { shared, memberUserId });
   if (existing) return existing;
-  const row = { id: genId('creditor'), name: name.trim(), note: '', user_id: session.id };
+  const row = { id: genId('creditor'), name: name.trim(), note: '', user_id: session.id, shared, member_user_id: memberUserId || null };
   const { error } = await sb.from('creditors').insert(row);
   if (error) throw new Error('Không tạo được chủ nợ, thử lại sau.');
   const c = mapCreditorRow({ ...row, created_at: new Date().toISOString() });
@@ -715,25 +762,33 @@ async function ensureCreditor(name, sb, session) {
   return c;
 }
 /** Ghi nợ mới. Truyền creditorId khi đã biết đúng chủ nợ (VD đang ở trang chi tiết 1 chủ nợ) — dùng
- * đúng sổ đó dù đang nợ hay đã trả hết. Truyền creditorName để tự tìm chủ nợ CÒN ĐANG NỢ theo tên
- * (không phân biệt hoa/thường); nếu chưa có ai đang nợ tên đó thì tự mở 1 sổ nợ MỚI (không chồng vào
- * sổ cũ đã trả hết, kể cả trùng tên). Mặc định KHÔNG đụng thu/chi thật; chỉ tạo giao dịch THU khi
- * addToTransactions=true (người dùng tự tích chọn) — lúc vay/mua nợ là lúc tiền/hàng VỀ TAY mình,
- * ngược lại với lúc trả nợ (addDebtPayment bên dưới) mới là lúc tiền THẬT SỰ rời túi (chi). */
-export async function addDebtCharge({ creditorId, creditorName, amount, date, description, categoryId, addToTransactions }) {
+ * đúng sổ đó dù đang nợ hay đã trả hết. Không thì truyền creditorName (chủ nợ ngoài app, gõ tên tự
+ * do) HOẶC memberUserId (chủ nợ là 1 THÀNH VIÊN trong sổ — tự lấy tên hiển thị của thành viên đó,
+ * và tự tìm/mở đúng sổ gắn với thành viên này thay vì so tên) — tự tìm chủ nợ CÒN ĐANG NỢ trùng,
+ * chưa có ai đang nợ thì tự mở 1 sổ nợ MỚI (không chồng vào sổ cũ đã trả hết). Truyền shared=true để
+ * ghi vào "Nợ chung" (mọi thành viên cùng xem/sửa) thay vì sổ riêng tư mặc định. Mặc định KHÔNG đụng
+ * thu/chi thật; chỉ tạo giao dịch THU khi addToTransactions=true — lúc vay/mua nợ là lúc tiền/hàng
+ * VỀ TAY mình, ngược lại với lúc trả nợ (addDebtPayment bên dưới) mới là lúc tiền THẬT SỰ rời túi
+ * (chi). Trả về { creditorId, transactionId }. */
+export async function addDebtCharge({ creditorId, creditorName, memberUserId, shared, amount, date, description, categoryId, addToTransactions }) {
   const session = getSession();
   const sb = getSupabaseClient(session?.sbToken);
   const chargeAmount = Number(amount) || 0;
   if (chargeAmount <= 0) throw new Error('Số tiền nợ phải lớn hơn 0.');
   const entryDate = date || new Date().toISOString().slice(0, 10);
+  const isShared = !!shared;
   let creditor;
   if (creditorId) {
     creditor = getCreditor(creditorId);
     if (!creditor) throw new Error('Không tìm thấy chủ nợ.');
+  } else if (memberUserId) {
+    const member = getUser(memberUserId);
+    if (!member) throw new Error('Không tìm thấy thành viên.');
+    creditor = await ensureCreditor(member.name, sb, session, { shared: isShared, memberUserId });
   } else {
     const name = (creditorName || '').trim();
     if (!name) throw new Error('Cần nhập tên chủ nợ.');
-    creditor = await ensureCreditor(name, sb, session);
+    creditor = await ensureCreditor(name, sb, session, { shared: isShared });
   }
 
   let txnRow = null;
@@ -748,15 +803,17 @@ export async function addDebtCharge({ creditorId, creditorName, amount, date, de
   const row = {
     id: genId('debtentry'), creditor_id: creditor.id, kind: 'charge', amount: chargeAmount,
     entry_date: entryDate, description: description || '',
-    transaction_id: txnRow ? txnRow.id : null, user_id: session.id,
+    transaction_id: txnRow ? txnRow.id : null, user_id: session.id, shared: isShared,
   };
   const { error } = await sb.from('debt_entries').insert(row);
   if (error) throw new Error('Không lưu được ghi nợ, thử lại sau.');
   if (txnRow) state.transactions.unshift(mapTransactionRow({ ...txnRow, created_at: new Date().toISOString() }));
   state.debtEntries.unshift(mapDebtEntryRow({ ...row, created_at: new Date().toISOString() }));
   notify();
+  return { creditorId: creditor.id, transactionId: txnRow?.id || null };
 }
-/** Trả nợ (1 phần hoặc hết) cho 1 chủ nợ. Mặc định KHÔNG đụng thu/chi thật; chỉ tạo giao dịch chi khi addToTransactions=true (người dùng tự tích chọn). */
+/** Trả nợ (1 phần hoặc hết) cho 1 chủ nợ. Mặc định KHÔNG đụng thu/chi thật; chỉ tạo giao dịch chi
+ * khi addToTransactions=true. Trả về { transactionId } cho nơi gọi cần đồng bộ tiếp (xem addDebtCharge). */
 export async function addDebtPayment(creditorId, { amount, date, categoryId, description, addToTransactions }) {
   const creditor = getCreditor(creditorId);
   if (!creditor) throw new Error('Không tìm thấy chủ nợ.');
@@ -777,7 +834,7 @@ export async function addDebtPayment(creditorId, { amount, date, categoryId, des
   }
   const row = {
     id: genId('debtentry'), creditor_id: creditorId, kind: 'payment', amount: payAmount,
-    entry_date: payDate, description: description || '', transaction_id: txnRow ? txnRow.id : null, user_id: session.id,
+    entry_date: payDate, description: description || '', transaction_id: txnRow ? txnRow.id : null, user_id: session.id, shared: !!creditor.shared,
   };
   const { error: entryErr } = await sb.from('debt_entries').insert(row);
   if (entryErr) throw new Error(txnRow ? 'Đã tạo giao dịch nhưng chưa lưu được vào sổ nợ, thử lại sau.' : 'Không lưu được vào sổ nợ, thử lại sau.');
@@ -785,6 +842,7 @@ export async function addDebtPayment(creditorId, { amount, date, categoryId, des
   if (txnRow) state.transactions.unshift(mapTransactionRow({ ...txnRow, created_at: new Date().toISOString() }));
   state.debtEntries.unshift(mapDebtEntryRow({ ...row, created_at: new Date().toISOString() }));
   notify();
+  return { transactionId: txnRow?.id || null };
 }
 /** Sửa 1 dòng ghi nợ/trả nợ. addToTransactions điều khiển việc tạo/xóa/đồng bộ giao dịch thu/chi thật
  * đi kèm (nếu có) — loại giao dịch tự suy ra từ kind (charge=thu, payment=chi, xem addDebtCharge). */
@@ -856,11 +914,12 @@ export async function updateCreditor(id, { name, note }) {
   if (c) Object.assign(c, patch);
   notify();
 }
-/** Xóa HẲN mọi sổ nợ (mọi chu kỳ, kể cả đang nợ lẫn đã trả hết) mang tên này — dùng để dọn 1 tên
- * khỏi gợi ý chủ nợ (VD tên gõ nhầm lúc test). KHÔNG xóa các giao dịch chi tiêu thật đã trả trước đó. */
-export async function deleteCreditorsByName(name) {
+/** Xóa HẲN mọi sổ nợ (mọi chu kỳ, kể cả đang nợ lẫn đã trả hết) mang tên này TRONG ĐÚNG 1 sổ (riêng
+ * tư hoặc Nợ chung, không lẫn nhau) — dùng để dọn 1 tên khỏi gợi ý chủ nợ (VD tên gõ nhầm lúc test).
+ * KHÔNG xóa các giao dịch chi tiêu thật đã trả trước đó. */
+export async function deleteCreditorsByName(name, shared = false) {
   const key = (name || '').trim().toLowerCase();
-  const matches = state.creditors.filter((c) => c.name.trim().toLowerCase() === key);
+  const matches = state.creditors.filter((c) => !!c.shared === !!shared && c.name.trim().toLowerCase() === key);
   if (!matches.length) return;
   const session = getSession();
   const sb = getSupabaseClient(session?.sbToken);
@@ -890,9 +949,10 @@ function receivableEntriesOf(debtorId) { return state.receivableEntries.filter((
 export function debtorBalance(debtorId) {
   return receivableEntriesOf(debtorId).reduce((s, e) => s + (e.kind === 'lend' ? e.amount : -e.amount), 0);
 }
-/** Danh sách người nợ kèm số dư còn nợ mình + ngày hoạt động gần nhất, mới nhất trước. filters.status: 'active' (còn nợ mình) | 'paid' (đã trả hết). */
+/** Danh sách người nợ kèm số dư còn nợ mình + ngày hoạt động gần nhất, mới nhất trước.
+ * filters.status: 'active' (còn nợ mình) | 'paid' (đã trả hết). filters.shared: xem listCreditors(). */
 export function listDebtors(filters = {}) {
-  let list = state.debtors.map((d) => {
+  let list = state.debtors.filter((d) => !!d.shared === !!filters.shared).map((d) => {
     const entries = receivableEntriesOf(d.id);
     const lastDate = entries.reduce((m, e) => (e.date > m ? e.date : m), '');
     return { ...d, balance: debtorBalance(d.id), lastDate, entryCount: entries.length };
@@ -903,10 +963,10 @@ export function listDebtors(filters = {}) {
 }
 export function getDebtor(id) { return state.debtors.find((d) => d.id === id); }
 /** Toàn bộ TÊN người nợ đã dùng qua, không trùng (kể cả đã "đã trả hết") — gợi ý lúc ghi mới. */
-export function listDebtorNames() {
+export function listDebtorNames(shared = false) {
   const seen = new Set();
   const names = [];
-  listDebtors().forEach((d) => {
+  listDebtors({ shared }).forEach((d) => {
     const key = d.name.trim().toLowerCase();
     if (!seen.has(key)) { seen.add(key); names.push(d.name); }
   });
@@ -916,44 +976,57 @@ export function listDebtorNames() {
 export function listReceivableEntries(debtorId) {
   return receivableEntriesOf(debtorId).sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt));
 }
-/** Tổng sẽ thu về từ TẤT CẢ người nợ (của riêng người đang đăng nhập). */
+/** Tổng sẽ thu về từ TẤT CẢ người nợ (của riêng người đang đăng nhập, không tính phần "chung"). */
 export function totalReceivable() {
-  return state.debtors.reduce((s, d) => s + Math.max(0, debtorBalance(d.id)), 0);
+  return state.debtors.filter((d) => !d.shared).reduce((s, d) => s + Math.max(0, debtorBalance(d.id)), 0);
 }
 
-/** Chỉ tìm người nợ CÒN ĐANG NỢ (balance > 0) theo tên — người đã "đã trả hết" không tính, để lần
- * cho vay mới cùng tên KHÔNG bị chồng vào sổ cũ đã đóng, mà tự mở 1 sổ mới (cùng tên, id khác). */
-function findOpenDebtorByName(name) {
-  const key = name.trim().toLowerCase();
-  return state.debtors.find((d) => d.name.trim().toLowerCase() === key && debtorBalance(d.id) > 0);
+/** Chỉ tìm người nợ CÒN ĐANG NỢ (balance > 0) trong ĐÚNG 1 sổ (riêng tư/chung) — ưu tiên khớp theo
+ * `memberUserId` nếu có truyền, không thì khớp theo tên. Người đã "đã trả hết" không tính, để lần
+ * cho vay mới cùng tên/thành viên KHÔNG bị chồng vào sổ cũ đã đóng, mà tự mở 1 sổ mới. */
+function findOpenDebtorByName(name, { shared = false, memberUserId = null } = {}) {
+  const key = (name || '').trim().toLowerCase();
+  const pool = state.debtors.filter((d) => !!d.shared === !!shared && debtorBalance(d.id) > 0);
+  if (memberUserId) {
+    const byMember = pool.find((d) => d.memberUserId === memberUserId);
+    if (byMember) return byMember;
+  }
+  return pool.find((d) => d.name.trim().toLowerCase() === key);
 }
-async function ensureDebtor(name, sb, session) {
-  const existing = findOpenDebtorByName(name);
+async function ensureDebtor(name, sb, session, { shared = false, memberUserId = null } = {}) {
+  const existing = findOpenDebtorByName(name, { shared, memberUserId });
   if (existing) return existing;
-  const row = { id: genId('debtor'), name: name.trim(), note: '', user_id: session.id };
+  const row = { id: genId('debtor'), name: name.trim(), note: '', user_id: session.id, shared, member_user_id: memberUserId || null };
   const { error } = await sb.from('debtors').insert(row);
   if (error) throw new Error('Không tạo được người nợ, thử lại sau.');
   const d = mapDebtorRow({ ...row, created_at: new Date().toISOString() });
   state.debtors.push(d);
   return d;
 }
-/** Cho vay/bán chịu mới. Truyền debtorId khi đã biết đúng người (VD đang ở trang chi tiết); truyền
- * debtorName để tự tìm người CÒN ĐANG NỢ theo tên, chưa có ai đang nợ tên đó thì tự mở sổ MỚI. Mặc
- * định KHÔNG đụng thu/chi thật; chỉ tạo giao dịch CHI khi addToTransactions=true (tiền thật rời túi). */
-export async function addReceivableLend({ debtorId, debtorName, amount, date, description, categoryId, addToTransactions }) {
+/** Cho vay/bán chịu mới. Truyền debtorId khi đã biết đúng người (VD đang ở trang chi tiết); không
+ * thì truyền debtorName (người ngoài app) hoặc memberUserId (người nợ là 1 THÀNH VIÊN trong sổ) để
+ * tự tìm người CÒN ĐANG NỢ trùng, chưa có ai đang nợ thì tự mở sổ MỚI. Mặc định KHÔNG đụng thu/chi
+ * thật; chỉ tạo giao dịch CHI khi addToTransactions=true (tiền thật rời túi). Trả về
+ * { debtorId, transactionId }. */
+export async function addReceivableLend({ debtorId, debtorName, memberUserId, shared, amount, date, description, categoryId, addToTransactions }) {
   const session = getSession();
   const sb = getSupabaseClient(session?.sbToken);
   const lendAmount = Number(amount) || 0;
   if (lendAmount <= 0) throw new Error('Số tiền cho vay phải lớn hơn 0.');
   const entryDate = date || new Date().toISOString().slice(0, 10);
+  const isShared = !!shared;
   let debtor;
   if (debtorId) {
     debtor = getDebtor(debtorId);
     if (!debtor) throw new Error('Không tìm thấy người nợ.');
+  } else if (memberUserId) {
+    const member = getUser(memberUserId);
+    if (!member) throw new Error('Không tìm thấy thành viên.');
+    debtor = await ensureDebtor(member.name, sb, session, { shared: isShared, memberUserId });
   } else {
     const name = (debtorName || '').trim();
     if (!name) throw new Error('Cần nhập tên người nợ.');
-    debtor = await ensureDebtor(name, sb, session);
+    debtor = await ensureDebtor(name, sb, session, { shared: isShared });
   }
 
   let txnRow = null;
@@ -968,15 +1041,17 @@ export async function addReceivableLend({ debtorId, debtorName, amount, date, de
   const row = {
     id: genId('recv'), debtor_id: debtor.id, kind: 'lend', amount: lendAmount,
     entry_date: entryDate, description: description || '',
-    transaction_id: txnRow ? txnRow.id : null, user_id: session.id,
+    transaction_id: txnRow ? txnRow.id : null, user_id: session.id, shared: isShared,
   };
   const { error } = await sb.from('receivable_entries').insert(row);
   if (error) throw new Error('Không lưu được khoản cho vay, thử lại sau.');
   if (txnRow) state.transactions.unshift(mapTransactionRow({ ...txnRow, created_at: new Date().toISOString() }));
   state.receivableEntries.unshift(mapReceivableEntryRow({ ...row, created_at: new Date().toISOString() }));
   notify();
+  return { debtorId: debtor.id, transactionId: txnRow?.id || null };
 }
-/** Thu tiền (1 phần hoặc hết) từ 1 người nợ. Mặc định KHÔNG đụng thu/chi thật; chỉ tạo giao dịch THU khi addToTransactions=true (tiền thật về túi). */
+/** Thu tiền (1 phần hoặc hết) từ 1 người nợ. Mặc định KHÔNG đụng thu/chi thật; chỉ tạo giao dịch THU
+ * khi addToTransactions=true (tiền thật về túi). Trả về { transactionId }. */
 export async function addReceivableCollect(debtorId, { amount, date, categoryId, description, addToTransactions }) {
   const debtor = getDebtor(debtorId);
   if (!debtor) throw new Error('Không tìm thấy người nợ.');
@@ -997,7 +1072,7 @@ export async function addReceivableCollect(debtorId, { amount, date, categoryId,
   }
   const row = {
     id: genId('recv'), debtor_id: debtorId, kind: 'collect', amount: collectAmount,
-    entry_date: collectDate, description: description || '', transaction_id: txnRow ? txnRow.id : null, user_id: session.id,
+    entry_date: collectDate, description: description || '', transaction_id: txnRow ? txnRow.id : null, user_id: session.id, shared: !!debtor.shared,
   };
   const { error: entryErr } = await sb.from('receivable_entries').insert(row);
   if (entryErr) throw new Error(txnRow ? 'Đã tạo giao dịch nhưng chưa lưu được vào sổ, thử lại sau.' : 'Không lưu được vào sổ, thử lại sau.');
@@ -1005,6 +1080,7 @@ export async function addReceivableCollect(debtorId, { amount, date, categoryId,
   if (txnRow) state.transactions.unshift(mapTransactionRow({ ...txnRow, created_at: new Date().toISOString() }));
   state.receivableEntries.unshift(mapReceivableEntryRow({ ...row, created_at: new Date().toISOString() }));
   notify();
+  return { transactionId: txnRow?.id || null };
 }
 /** Sửa 1 dòng cho vay/thu tiền. addToTransactions điều khiển việc tạo/xóa/đồng bộ giao dịch thật đi kèm (nếu có) — loại giao dịch tự suy ra từ kind (lend=chi, collect=thu). */
 export async function updateReceivableEntry(id, { amount, date, description, categoryId, addToTransactions }) {
@@ -1077,9 +1153,9 @@ export async function updateDebtor(id, { name, note }) {
 }
 /** Xóa HẲN mọi sổ (mọi chu kỳ, kể cả đang nợ lẫn đã trả hết) mang tên này — dùng để dọn 1 tên khỏi
  * gợi ý người nợ (VD tên gõ nhầm lúc test). KHÔNG xóa các giao dịch thu/chi thật đã ghi trước đó. */
-export async function deleteDebtorsByName(name) {
+export async function deleteDebtorsByName(name, shared = false) {
   const key = (name || '').trim().toLowerCase();
-  const matches = state.debtors.filter((d) => d.name.trim().toLowerCase() === key);
+  const matches = state.debtors.filter((d) => !!d.shared === !!shared && d.name.trim().toLowerCase() === key);
   if (!matches.length) return;
   const session = getSession();
   const sb = getSupabaseClient(session?.sbToken);
