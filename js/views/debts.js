@@ -13,7 +13,45 @@ import { emptyState } from '../components/ui.js';
 import { toast } from '../components/toast.js';
 import { formatVND, formatDate, formatNumber, attachMoneyInput, unformatMoney } from '../utils.js';
 
+// Thứ tự khai báo ở đây quyết định luôn thứ tự tab hiển thị (xem Object.entries(DIRECTIONS) trong
+// render() bên dưới) — "Nợ chung" xếp ĐẦU vì liên quan tới cả nhà, ai cũng cần thấy ngay khi vào.
 const DIRECTIONS = {
+  sharedOwe: {
+    tabLabel: 'Nợ chung',
+    listIcon: 'landmark',
+    totalLabel: 'Tổng quỹ chung còn nợ',
+    totalColor: 'var(--warning)',
+    outstandingColor: 'var(--warning)',
+    settledColor: 'var(--success)',
+    counterpartLabel: 'Chủ nợ', counterpartPlaceholder: 'VD: Ngân hàng, Anh Ba',
+    renameTitle: 'Đổi tên chủ nợ',
+    addBtnLabel: 'Ghi nợ chung mới',
+    increaseModalTitle: 'Ghi nợ chung mới', increaseDetailBtn: 'Ghi nợ thêm',
+    increaseDateLabel: 'Ngày mượn', increaseDescLabel: 'Mượn để làm gì (không bắt buộc)', increaseDescPlaceholder: 'VD: sửa nhà, tiệc chung',
+    increaseAmountLabel: 'Số tiền nợ', increaseSubmitLabel: 'Ghi nợ',
+    increaseTxnLabel: 'Tính là 1 khoản thu nhập (tiền/hàng thật về tay)', increaseTxnType: 'income',
+    increaseEntryLabel: 'Ghi nợ', increaseIcon: 'cart',
+    decreaseTitle: (name) => `Trả nợ chung — ${name}`, decreaseDetailBtn: 'Trả nợ',
+    decreaseAmountLabel: 'Số tiền trả', decreaseDateLabel: 'Ngày trả', decreaseSubmitLabel: 'Xác nhận trả nợ',
+    decreaseTxnLabel: 'Đưa vào chi tiêu tháng này', decreaseTxnType: 'expense',
+    decreaseEntryLabel: 'Trả nợ', decreaseIcon: 'check',
+    entryEditIncreaseTitle: 'Sửa ghi nợ', entryEditDecreaseTitle: 'Sửa trả nợ',
+    entryDetailIncreaseTitle: 'Dòng ghi nợ', entryDetailDecreaseTitle: 'Dòng trả nợ',
+    entryDescLabel: 'Mượn để làm gì',
+    statusActiveTab: 'Đang nợ', statusPaidTab: 'Đã trả hết',
+    statusActiveLabel: 'còn nợ', statusPaidLabel: 'đã hết nợ',
+    emptyActive: { title: 'Quỹ chung chưa nợ ai', message: 'Bấm "Ghi nợ chung mới", hoặc chọn danh mục "Mượn nợ" ở khoản thu tại trang Giao dịch (luôn tự vào đây).' },
+    emptyPaid: { title: 'Chưa có chủ nợ chung nào trả hết', message: 'Chủ nợ trả hết nợ sẽ chuyển sang đây.' },
+    deleteNameConfirm: (name, warn) => `Xóa toàn bộ lịch sử/sổ nợ CHUNG mang tên "${name}" khỏi gợi ý.${warn} Các giao dịch chi tiêu đã ghi khi trả nợ trước đó vẫn được giữ nguyên. Không thể hoàn tác.`,
+    api: {
+      list: (filters = {}) => S.listCreditors({ ...filters, shared: true }), get: S.getCreditor, balance: S.creditorBalance,
+      listNames: () => S.listCreditorNames(true), listEntries: S.listDebtEntries,
+      total: S.totalSharedDebtRemaining, addIncrease: (payload) => S.addDebtCharge({ ...payload, shared: true }), addDecrease: S.addDebtPayment,
+      updateEntry: S.updateDebtEntry, deleteEntry: S.deleteDebtEntry, updateCounterpart: S.updateCreditor, deleteByName: (name) => S.deleteCreditorsByName(name, true),
+      counterpartIdKey: 'creditorId', counterpartNameKey: 'creditorName',
+      increaseKind: 'charge', decreaseKind: 'payment',
+    },
+  },
   owe: {
     tabLabel: 'Tôi nợ',
     listIcon: 'creditCard',
@@ -84,45 +122,9 @@ const DIRECTIONS = {
       increaseKind: 'lend', decreaseKind: 'collect',
     },
   },
-  sharedOwe: {
-    tabLabel: 'Nợ chung',
-    listIcon: 'landmark',
-    totalLabel: 'Tổng quỹ chung còn nợ',
-    totalColor: 'var(--warning)',
-    outstandingColor: 'var(--warning)',
-    settledColor: 'var(--success)',
-    counterpartLabel: 'Chủ nợ', counterpartPlaceholder: 'VD: Ngân hàng, Anh Ba',
-    renameTitle: 'Đổi tên chủ nợ',
-    addBtnLabel: 'Ghi nợ chung mới',
-    increaseModalTitle: 'Ghi nợ chung mới', increaseDetailBtn: 'Ghi nợ thêm',
-    increaseDateLabel: 'Ngày mượn', increaseDescLabel: 'Mượn để làm gì (không bắt buộc)', increaseDescPlaceholder: 'VD: sửa nhà, tiệc chung',
-    increaseAmountLabel: 'Số tiền nợ', increaseSubmitLabel: 'Ghi nợ',
-    increaseTxnLabel: 'Tính là 1 khoản thu nhập (tiền/hàng thật về tay)', increaseTxnType: 'income',
-    increaseEntryLabel: 'Ghi nợ', increaseIcon: 'cart',
-    decreaseTitle: (name) => `Trả nợ chung — ${name}`, decreaseDetailBtn: 'Trả nợ',
-    decreaseAmountLabel: 'Số tiền trả', decreaseDateLabel: 'Ngày trả', decreaseSubmitLabel: 'Xác nhận trả nợ',
-    decreaseTxnLabel: 'Đưa vào chi tiêu tháng này', decreaseTxnType: 'expense',
-    decreaseEntryLabel: 'Trả nợ', decreaseIcon: 'check',
-    entryEditIncreaseTitle: 'Sửa ghi nợ', entryEditDecreaseTitle: 'Sửa trả nợ',
-    entryDetailIncreaseTitle: 'Dòng ghi nợ', entryDetailDecreaseTitle: 'Dòng trả nợ',
-    entryDescLabel: 'Mượn để làm gì',
-    statusActiveTab: 'Đang nợ', statusPaidTab: 'Đã trả hết',
-    statusActiveLabel: 'còn nợ', statusPaidLabel: 'đã hết nợ',
-    emptyActive: { title: 'Quỹ chung chưa nợ ai', message: 'Bấm "Ghi nợ chung mới", hoặc chọn danh mục "Mượn nợ" ở khoản thu tại trang Giao dịch (luôn tự vào đây).' },
-    emptyPaid: { title: 'Chưa có chủ nợ chung nào trả hết', message: 'Chủ nợ trả hết nợ sẽ chuyển sang đây.' },
-    deleteNameConfirm: (name, warn) => `Xóa toàn bộ lịch sử/sổ nợ CHUNG mang tên "${name}" khỏi gợi ý.${warn} Các giao dịch chi tiêu đã ghi khi trả nợ trước đó vẫn được giữ nguyên. Không thể hoàn tác.`,
-    api: {
-      list: (filters = {}) => S.listCreditors({ ...filters, shared: true }), get: S.getCreditor, balance: S.creditorBalance,
-      listNames: () => S.listCreditorNames(true), listEntries: S.listDebtEntries,
-      total: S.totalSharedDebtRemaining, addIncrease: (payload) => S.addDebtCharge({ ...payload, shared: true }), addDecrease: S.addDebtPayment,
-      updateEntry: S.updateDebtEntry, deleteEntry: S.deleteDebtEntry, updateCounterpart: S.updateCreditor, deleteByName: (name) => S.deleteCreditorsByName(name, true),
-      counterpartIdKey: 'creditorId', counterpartNameKey: 'creditorName',
-      increaseKind: 'charge', decreaseKind: 'payment',
-    },
-  },
 };
 
-let direction = 'owe';
+let direction = 'sharedOwe';
 let tab = 'active';
 
 export function renderHeader(headerEl) {

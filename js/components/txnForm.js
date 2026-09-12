@@ -98,8 +98,9 @@ export function openTransactionForm({ transaction, defaultType = 'expense', onSa
         errEl.style.display = 'none';
         btn.disabled = true;
         try {
+          let borrowResult = null;
           if (isAddMode && category?.special === 'borrow') {
-            await submitBorrow(sheet, { amount, date, description: note, categoryId });
+            borrowResult = await submitBorrow(sheet, { amount, date, description: note, categoryId });
           } else if (isAddMode && category?.special === 'repay') {
             await submitRepay(sheet, { amount, date, description: note, categoryId });
           } else if (transaction) {
@@ -108,6 +109,11 @@ export function openTransactionForm({ transaction, defaultType = 'expense', onSa
             await S.addTransaction({ type, amount, categoryId, date, note });
           }
           toast(transaction ? 'Đã lưu thay đổi' : 'Đã thêm giao dịch', 'success');
+          // Mượn của 1 thành viên trong sổ nhưng bước "điền hộ" sang sổ riêng của họ thất bại (xem
+          // S.addDebtCharge) -> báo rõ cho người dùng, đừng để im lặng tưởng nhầm app có lỗi khác.
+          if (borrowResult?.mirrorFailed) {
+            toast('Đã ghi vào Nợ chung, nhưng CHƯA điền được vào sổ riêng của thành viên đó — kiểm tra lại đã chạy đủ SQL/deploy Edge Function mới chưa (xem docs mục 13).', 'error');
+          }
           close();
           onSaved && onSaved();
         } catch (err) {
@@ -212,11 +218,11 @@ async function submitBorrow(sheet, { amount, date, description, categoryId }) {
   if (counterpartType === 'member') {
     const memberUserId = sheet.querySelector('#debt-member-select').value;
     if (!memberUserId) throw new Error('Cần chọn thành viên.');
-    await S.addDebtCharge({ memberUserId, shared: true, amount, date, description, categoryId, addToTransactions: true });
+    return await S.addDebtCharge({ memberUserId, shared: true, amount, date, description, categoryId, addToTransactions: true });
   } else {
     const name = sheet.querySelector('#debt-creditor-name').value.trim();
     if (!name) throw new Error('Cần nhập tên chủ nợ.');
-    await S.addDebtCharge({ creditorName: name, shared: true, amount, date, description, categoryId, addToTransactions: true });
+    return await S.addDebtCharge({ creditorName: name, shared: true, amount, date, description, categoryId, addToTransactions: true });
   }
 }
 

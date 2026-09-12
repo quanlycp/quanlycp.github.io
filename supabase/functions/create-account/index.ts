@@ -27,6 +27,7 @@
 //   của 1 user role='owner' (xác minh lại tại server, không tin JWT mù):
 //     { type: 'member', username, name?, password? } — tạo tài khoản member mới
 //     { type: 'reset-member-password', userId, password? }
+//     { type: 'rename-member', userId, name } — owner đổi tên hiển thị của 1 tài khoản bất kỳ
 //     { type: 'delete-member', userId }
 // password bỏ trống thì tự sinh mật khẩu tạm ngẫu nhiên (trả về trong response).
 
@@ -450,6 +451,15 @@ Deno.serve(async (req) => {
     const { error } = await admin.from('users').update({ ...cred, must_change_password: true, failed_attempts: 0, locked_until: null }).eq('id', userId).eq('role', 'member');
     if (error) return json({ ok: false, reason: 'Lỗi hệ thống, thử lại sau.' }, 500);
     return json({ ok: true, tempPassword: finalPassword });
+  }
+
+  if (body.type === 'rename-member') {
+    const userId = String(body.userId || '').trim();
+    const name = String(body.name || '').trim();
+    if (!userId || !name) return json({ ok: false, reason: 'Thiếu dữ liệu.' }, 400);
+    const { error } = await admin.from('users').update({ name }).eq('id', userId);
+    if (error) return json({ ok: false, reason: 'Lỗi hệ thống, thử lại sau.' }, 500);
+    return json({ ok: true });
   }
 
   if (body.type === 'delete-member') {

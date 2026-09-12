@@ -25,13 +25,13 @@ export function render(contentEl) {
 
 function memberRowHtml(u) {
   return `
-    <div class="list-row" data-member="${u.id}" style="cursor:${u.role === 'owner' ? 'default' : 'pointer'}">
+    <div class="list-row" data-member="${u.id}" style="cursor:pointer">
       <div class="row-thumb" style="background:${colorFor(u.id)}">${initials(u.name)}</div>
       <div class="row-main">
         <div class="row-title">${u.name}</div>
         <div class="row-sub">${u.role === 'owner' ? 'Chủ sổ (toàn quyền)' : 'Thành viên'}</div>
       </div>
-      ${u.role !== 'owner' ? icon('chevronRight', 'icon-sm') : ''}
+      ${icon('chevronRight', 'icon-sm')}
     </div>`;
 }
 
@@ -76,16 +76,23 @@ function showCredentialModal(name, username, tempPassword) {
 }
 
 function openMemberActions(u) {
-  if (!u || u.role === 'owner') return;
+  if (!u) return;
   openModal({
     title: u.name,
-    bodyHtml: `<p class="text-sm text-muted">Thành viên.</p>`,
+    bodyHtml: `<p class="text-sm text-muted">${u.role === 'owner' ? 'Chủ sổ (toàn quyền).' : 'Thành viên.'}</p>`,
     footHtml: `
-      <button class="btn btn-outline btn-block" data-reset>${icon('key', 'icon-sm')} Cấp lại mật khẩu</button>
-      <button class="btn btn-danger-outline btn-block" data-del style="margin-top:8px">${icon('trash', 'icon-sm')} Xóa tài khoản</button>
+      <button class="btn btn-outline btn-block" data-rename>${icon('edit', 'icon-sm')} Đổi tên hiển thị</button>
+      ${u.role !== 'owner' ? `
+      <button class="btn btn-outline btn-block" data-reset style="margin-top:8px">${icon('key', 'icon-sm')} Cấp lại mật khẩu</button>
+      <button class="btn btn-danger-outline btn-block" data-del style="margin-top:8px">${icon('trash', 'icon-sm')} Xóa tài khoản</button>` : ''}
     `,
     onMount(sheet, closeFn) {
-      sheet.querySelector('[data-reset]').addEventListener('click', () => {
+      sheet.querySelector('[data-rename]').addEventListener('click', () => {
+        closeFn();
+        openRenameModal(u);
+      });
+      const resetBtn = sheet.querySelector('[data-reset]');
+      if (resetBtn) resetBtn.addEventListener('click', () => {
         closeFn();
         openResetPasswordModal({
           title: `Cấp lại mật khẩu — ${u.name}`,
@@ -97,7 +104,8 @@ function openMemberActions(u) {
           },
         });
       });
-      sheet.querySelector('[data-del]').addEventListener('click', () => {
+      const delBtn = sheet.querySelector('[data-del]');
+      if (delBtn) delBtn.addEventListener('click', () => {
         closeFn();
         confirmDialog({
           title: 'Xóa tài khoản?', message: `Xóa hẳn tài khoản của ${u.name} — không thể hoàn tác. Giao dịch cũ họ đã ghi vẫn được giữ nguyên trong sổ chung.`, confirmLabel: 'Xóa', danger: true,
@@ -106,6 +114,31 @@ function openMemberActions(u) {
             catch (err) { toast(err.message || 'Có lỗi xảy ra', 'error'); }
           },
         });
+      });
+    },
+  });
+}
+
+/** Đổi tên hiển thị 1 tài khoản — dùng chung renameMember() (owner đổi tên bất kỳ ai, kể cả chính
+ * mình) vì màn này chỉ owner mới vào được (xem NAV_OWNER_ONLY ở components/shell.js). */
+function openRenameModal(u) {
+  openModal({
+    title: 'Đổi tên hiển thị',
+    bodyHtml: `
+      <div class="field"><label>Tên hiển thị</label><input id="rename-name" value="${u.name.replace(/"/g, '&quot;')}" required/></div>
+      <div class="field-error" id="rename-error" style="display:none;margin-bottom:10px"></div>
+    `,
+    footHtml: `<button class="btn btn-primary btn-block" data-save>Lưu thay đổi</button>`,
+    onMount(sheet, closeFn) {
+      sheet.querySelector('[data-save]').addEventListener('click', async () => {
+        const name = sheet.querySelector('#rename-name').value.trim();
+        const errEl = sheet.querySelector('#rename-error');
+        if (!name) { errEl.textContent = 'Cần nhập tên.'; errEl.style.display = 'block'; return; }
+        try {
+          await S.renameMember(u.id, name);
+          toast('Đã đổi tên', 'success');
+          closeFn();
+        } catch (err) { errEl.textContent = err.message || 'Có lỗi xảy ra'; errEl.style.display = 'block'; }
       });
     },
   });

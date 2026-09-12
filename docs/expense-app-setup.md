@@ -622,14 +622,27 @@ qua RLS.
 ### 13.2 Deploy lại Edge Function
 
 Khác với mục 12, lần này **CÓ sửa** `supabase/functions/create-account/index.ts` (thêm type
-`set-own-name`, `debt-mirror-add`, `debt-mirror-update`, `debt-mirror-delete`) — vào **Edge Functions
-→ create-account** trên Dashboard, dán lại TOÀN BỘ nội dung file mới nhất rồi **Deploy** lại (giống
-lúc tạo lần đầu ở mục 4).
+`set-own-name`, `rename-member`, `debt-mirror-add`, `debt-mirror-update`, `debt-mirror-delete`) —
+vào **Edge Functions → create-account** trên Dashboard, dán lại TOÀN BỘ nội dung file mới nhất rồi
+**Deploy** lại (giống lúc tạo lần đầu ở mục 4). **Mỗi lần code Edge Function được cập nhật thêm sau
+này đều phải deploy lại y hệt bước này** — file không tự cập nhật trên Supabase dù đã đẩy code lên
+GitHub, vì GitHub Pages chỉ phục vụ phần giao diện (HTML/CSS/JS), KHÔNG đụng gì tới Supabase cả.
 
-### 13.3 Việc còn lại cho mục này
+### 13.3 Không thấy tự điền vào sổ riêng của thành viên?
+
+Nếu chọn 1 thành viên khi Mượn nợ mà đăng nhập bằng tài khoản thành viên đó vẫn KHÔNG thấy khoản đó
+trong **Công nợ → Người khác nợ tôi** — 99% là do **CHƯA làm đủ** 13.1 + 13.2 ở trên (chưa chạy SQL,
+hoặc đã sửa code nhưng CHƯA bấm Deploy lại trên Supabase Dashboard). App sẽ tự báo bằng 1 thông báo
+đỏ ngay sau khi ghi ("Đã ghi vào Nợ chung, nhưng CHƯA điền được...") nếu bước điền hộ này thất bại —
+khoản Nợ chung chính vẫn luôn ghi đúng bình thường dù bước điền hộ có lỗi, chỉ thiếu phần tiện ích tự
+điền thêm này thôi, không mất dữ liệu.
+
+### 13.4 Việc còn lại cho mục này
 
 - [ ] Chạy SQL ở 13.1 + deploy lại Edge Function ở 13.2.
-- [ ] Vào **Đổi mật khẩu** tự đổi tên hiển thị của mình (VD đổi "Chủ sổ" thành tên thật) nếu cần.
+- [ ] Vào **Đổi mật khẩu** tự đổi tên hiển thị của mình (VD đổi "Chủ sổ" thành tên thật) nếu cần —
+      hoặc owner vào **Quản lý User** bấm vào 1 tài khoản bất kỳ (kể cả chính mình) → **Đổi tên hiển
+      thị** để đổi tên người khác luôn, khỏi cần họ tự đăng nhập đổi.
 
 ## 14. Việc còn lại
 
