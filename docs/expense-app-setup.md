@@ -592,8 +592,9 @@ trên (giống `creditors`/`debt_entries` gốc).
 
 ### 12.2 Việc còn lại cho mục này
 
-- [ ] Sau khi chạy SQL, đăng xuất/đăng nhập lại (hoặc tải lại trang) để app tự tạo 2 danh mục "Mượn
-      nợ"/"Trả nợ" nếu chưa có.
+- [ ] Sau khi chạy SQL, đăng xuất/đăng nhập lại (hoặc tải lại trang) — app tự kích hoạt tính năng
+      cho đúng 2 danh mục "Mượn nợ"/"Trả nợ" (nếu bạn đã tự tạo sẵn 2 danh mục cùng tên/loại từ
+      trước thì DÙNG LUÔN đúng 2 danh mục đó, không tạo trùng thêm cái mới; chưa có thì mới tự tạo).
 
 ## 13. Việc còn lại
 
