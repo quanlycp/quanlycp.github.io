@@ -644,7 +644,78 @@ khoản Nợ chung chính vẫn luôn ghi đúng bình thường dù bước đi
       hoặc owner vào **Quản lý User** bấm vào 1 tài khoản bất kỳ (kể cả chính mình) → **Đổi tên hiển
       thị** để đổi tên người khác luôn, khỏi cần họ tự đăng nhập đổi.
 
-## 14. Việc còn lại
+## 14. Bổ sung sau: Nhật ký hoạt động (audit log) (nếu project đã tạo trước khi có mục này)
+
+Tính năng: mục **Nhật ký** (chỉ chủ sổ thấy, giống Quản lý User/Cài đặt) ghi lại MỌI lượt **Thêm/
+Sửa/Xóa giao dịch** — ai làm, lúc nào, nội dung/số tiền/ngày của giao dịch đó — để chủ sổ (Trưởng
+ban kiểm soát) rà soát lại hoạt động ghi sổ của từng thành viên.
+
+Ghi bằng **trigger ở chính Supabase** (không phải code JS gọi tay từng chỗ) — tự bắt được TẤT CẢ
+đường tạo/sửa/xóa `transactions` hiện có (Thêm giao dịch, Mượn/Trả nợ, Xác nhận định kỳ, Hoàn thành
+kế hoạch...) và cả những đường mới thêm sau này, khỏi lo code JS bỏ sót chỗ nào.
+
+### 14.1 Tạo bảng + trigger (chạy trong SQL Editor)
+
+```sql
+create table activity_log (
+  id bigint generated always as identity primary key,
+  action text not null, -- 'INSERT' | 'UPDATE' | 'DELETE'
+  txn_id text,
+  user_id text,
+  user_name text,
+  txn_type text,
+  txn_amount numeric,
+  txn_category_name text,
+  txn_note text,
+  txn_date date,
+  created_at timestamptz default now()
+);
+alter table activity_log enable row level security;
+grant select on activity_log to authenticated;
+-- CHỈ chủ sổ xem được nhật ký (giống Quản lý User) — không ai được tự ghi/sửa/xóa qua client, chỉ
+-- trigger bên dưới (chạy với quyền SECURITY DEFINER, không qua RLS) mới ghi được -> không sợ bị
+-- xóa/sửa dấu vết.
+create policy "activity_log select owner only" on activity_log for select using ((auth.jwt() ->> 'app_role') = 'owner');
+
+create or replace function log_transaction_activity() returns trigger
+language plpgsql security definer as $$
+declare
+  rec record;
+  actor text;
+  actor_nm text;
+  cat_nm text;
+begin
+  if TG_OP = 'DELETE' then rec := OLD; else rec := NEW; end if;
+  actor := auth.jwt() ->> 'row_id';
+  select name into actor_nm from users where id = actor;
+  select name into cat_nm from categories where id = rec.category_id;
+  insert into activity_log (action, txn_id, user_id, user_name, txn_type, txn_amount, txn_category_name, txn_note, txn_date)
+  values (TG_OP, rec.id, actor, coalesce(actor_nm, 'Không rõ'), rec.type, rec.amount, cat_nm, rec.note, rec.txn_date);
+  return rec;
+exception when others then
+  -- Nhật ký chỉ là tiện ích theo dõi, KHÔNG được để lỗi ghi log làm hỏng thao tác thật (thêm/sửa/
+  -- xóa giao dịch) -> nuốt lỗi, chỉ cảnh báo ra log server (Dashboard -> Logs), không chặn giao dịch.
+  raise warning 'log_transaction_activity error: %', SQLERRM;
+  return rec;
+end;
+$$;
+
+drop trigger if exists trg_log_transaction_activity on transactions;
+create trigger trg_log_transaction_activity
+after insert or update or delete on transactions
+for each row execute function log_transaction_activity();
+```
+
+Không cần deploy lại Edge Function cho mục này — trang Nhật ký đọc thẳng bảng `activity_log` qua
+RLS như các trang khác.
+
+### 14.2 Việc còn lại cho mục này
+
+- [ ] Chạy SQL ở 14.1.
+- [ ] Vào **Nhật ký** (chỉ chủ sổ thấy) kiểm tra thử — thêm/sửa/xóa 1 giao dịch bất kỳ rồi xem có
+      hiện đúng dòng mới trong Nhật ký không.
+
+## 15. Việc còn lại
 
 - [ ] Đổi mật khẩu owner ngay sau lần đăng nhập đầu tiên (app tự bắt đổi).
 - [ ] Rà soát dữ liệu chi tiêu thật trước khi coi là "đang dùng thật".
@@ -652,3 +723,4 @@ khoản Nợ chung chính vẫn luôn ghi đúng bình thường dù bước đi
 - [ ] (Tùy chọn) Làm theo mục 11 nếu muốn dùng "Công nợ phải thu" (người khác nợ mình).
 - [ ] (Tùy chọn) Làm theo mục 12 nếu muốn Mượn/Trả nợ ngay từ Giao dịch + Nợ chung.
 - [ ] (Tùy chọn) Làm theo mục 13 nếu muốn tự điền hộ Mượn nợ sang sổ riêng của thành viên + đổi tên hiển thị.
+- [ ] (Tùy chọn) Làm theo mục 14 nếu muốn có Nhật ký hoạt động (audit log).

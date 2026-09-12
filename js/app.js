@@ -14,6 +14,7 @@ import * as Debts from './views/debts.js';
 import * as Notifications from './views/notifications.js';
 import * as Users from './views/users.js';
 import * as Settings from './views/settings.js';
+import * as ActivityLog from './views/activityLog.js';
 import * as ChangePasswordSelf from './views/changePasswordSelf.js';
 
 const ROUTES = [
@@ -28,6 +29,7 @@ const ROUTES = [
   { re: /^#\/thong-bao$/, view: Notifications },
   { re: /^#\/nguoi-dung$/, view: Users, ownerOnly: true },
   { re: /^#\/cai-dat$/, view: Settings, ownerOnly: true },
+  { re: /^#\/nhat-ky$/, view: ActivityLog, ownerOnly: true },
   { re: /^#\/doi-mat-khau$/, view: ChangePasswordSelf },
 ];
 
