@@ -18,6 +18,7 @@ import { formatVND, formatDate, formatNumber, attachMoneyInput, unformatMoney } 
 const DIRECTIONS = {
   sharedOwe: {
     tabLabel: 'Nợ chung',
+    namePrefix: 'Nợ ', // hiện "Nợ Lâm Viên" thay vì chỉ "Lâm Viên" — rõ đây là khoản NỢ, không phải tên 1 mục khác
     listIcon: 'landmark',
     totalLabel: 'Tổng quỹ chung còn nợ',
     totalColor: 'var(--warning)',
@@ -54,6 +55,7 @@ const DIRECTIONS = {
   },
   owe: {
     tabLabel: 'Tôi nợ',
+    namePrefix: 'Nợ ',
     listIcon: 'creditCard',
     totalLabel: 'Tổng còn nợ',
     totalColor: 'var(--danger)',
@@ -179,7 +181,7 @@ function counterpartCardHtml(c, cfg) {
         <div class="flex items-center gap-8">
           <div class="cat-icon" style="background:var(--color-primary)">${icon(cfg.listIcon, 'icon-sm')}</div>
           <div>
-            <b>${c.name}</b>
+            <b>${cfg.namePrefix || ''}${c.name}</b>
             ${c.lastDate ? `<div class="text-sm text-muted">Gần nhất: ${formatDate(c.lastDate)}</div>` : ''}
           </div>
         </div>
@@ -197,7 +199,7 @@ function openCounterpartDetail(counterpartId, cfg) {
   const balance = cfg.api.balance(c.id);
   const entries = cfg.api.listEntries(c.id);
   openModal({
-    title: c.name,
+    title: (cfg.namePrefix || '') + c.name,
     bodyHtml: `
       <div class="oc-line mb-16"><span>${balance > 0 ? cfg.statusActiveLabel[0].toUpperCase() + cfg.statusActiveLabel.slice(1) : cfg.statusPaidLabel[0].toUpperCase() + cfg.statusPaidLabel.slice(1)}</span><b style="color:${balance > 0 ? cfg.outstandingColor : cfg.settledColor}">${formatVND(balance)}</b></div>
       ${entries.length ? `
