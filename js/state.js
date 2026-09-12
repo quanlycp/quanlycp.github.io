@@ -345,6 +345,18 @@ export async function resetMemberPassword(userId, customPassword) {
   if (!res.ok) throw new Error(res.reason || 'Không cấp lại được mật khẩu.');
   return res.tempPassword;
 }
+/** Owner đổi tên hiển thị của 1 tài khoản BẤT KỲ (kể cả chính owner) — khác setOwnName() ở trên là
+ * hàm này KHÔNG cần đăng nhập bằng đúng tài khoản đó, chỉ cần đang là owner. */
+export async function renameMember(userId, name) {
+  const trimmed = (name || '').trim();
+  if (!trimmed) throw new Error('Cần nhập tên hiển thị.');
+  const session = getSession();
+  const res = await callAccountFunction(session?.sbToken, { type: 'rename-member', userId, name: trimmed });
+  if (!res.ok) throw new Error(res.reason || 'Không đổi được tên.');
+  const u = getUser(userId);
+  if (u) u.name = trimmed;
+  notify();
+}
 export async function deleteMember(userId) {
   const session = getSession();
   const res = await callAccountFunction(session?.sbToken, { type: 'delete-member', userId });
@@ -844,6 +856,7 @@ async function mirrorDebtAdd(creditor, { kind, amount, date, description, borrow
       type: 'debt-mirror-add', memberUserId: creditor.memberUserId, debtorId: creditor.mirrorDebtorId,
       name: borrowerName, kind, amount, date, description,
     });
+    if (!res.ok) console.warn('mirrorDebtAdd không thành công:', res.reason);
     return res.ok ? { debtorId: res.debtorId, entryId: res.entryId } : null;
   } catch (e) { console.warn('mirrorDebtAdd lỗi:', e); return null; }
 }
@@ -909,8 +922,12 @@ export async function addDebtCharge({ creditorId, creditorName, memberUserId, sh
   const entry = mapDebtEntryRow({ ...row, created_at: new Date().toISOString() });
   state.debtEntries.unshift(entry);
 
-  // Mượn của 1 thành viên trong sổ -> tự điền hộ vào sổ "Người khác nợ tôi" riêng của họ (xem mirrorDebtAdd()).
-  if (creditor.memberUserId) {
+  // Mượn của 1 thành viên trong sổ -> tự điền hộ vào sổ "Người khác nợ tôi" riêng của họ (xem
+  // mirrorDebtAdd()) — mirrorAttempted/mirrorFailed trả về để nơi gọi (txnForm.js) báo cho người
+  // dùng biết nếu bước điền hộ này thất bại (VD chưa deploy đủ Edge Function/SQL mới), tránh im
+  // lặng khiến người dùng tưởng nhầm là app có lỗi trong khi Nợ chung vẫn ghi đúng bình thường.
+  let mirrorFailed = false;
+  if (creditor.memberUserId && creditor.memberUserId !== session.id) {
     const mirror = await mirrorDebtAdd(creditor, {
       kind: 'lend', amount: chargeAmount, date: entryDate, description,
       borrowerName: getUser(session.id)?.name || 'Người dùng', sbToken: session?.sbToken,
@@ -922,10 +939,12 @@ export async function addDebtCharge({ creditorId, creditorName, memberUserId, sh
       }
       await sb.from('debt_entries').update({ mirror_entry_id: mirror.entryId }).eq('id', entry.id);
       entry.mirrorEntryId = mirror.entryId;
+    } else {
+      mirrorFailed = true;
     }
   }
   notify();
-  return { creditorId: creditor.id, transactionId: txnRow?.id || null };
+  return { creditorId: creditor.id, transactionId: txnRow?.id || null, mirrorFailed };
 }
 /** Trả nợ (1 phần hoặc hết) cho 1 chủ nợ. Mặc định KHÔNG đụng thu/chi thật; chỉ tạo giao dịch chi
  * khi addToTransactions=true. Trả về { transactionId } cho nơi gọi cần đồng bộ tiếp (xem addDebtCharge). */
