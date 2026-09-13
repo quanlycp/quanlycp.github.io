@@ -60,23 +60,23 @@ export function buildShell(root, isOwner) {
   document.getElementById('btn-logout-side').addEventListener('click', onLogoutClick);
 }
 
-/** Báo đang mất mạng và/hoặc còn thay đổi CHƯA đồng bộ lên Supabase (xem outbox trong state.js) —
- * gọi lại mỗi lần vẽ trang (app.js) để luôn đúng thực tế hiện tại, khỏi phải tự đoán. `syncIssue`
- * (xem S.getSyncIssue()) là 1 lỗi THẬT gặp phải lúc đồng bộ (không phải chỉ đang chờ mạng) — ưu tiên
- * hiện lỗi này lên trước, kèm màu đỏ, để không còn "im lặng" như trước (xem state.js). */
+/** Báo còn thay đổi CHƯA đồng bộ lên Supabase (xem outbox trong state.js) — gọi lại mỗi lần vẽ trang
+ * (app.js) để luôn đúng thực tế hiện tại, khỏi phải tự đoán. `syncIssue` (xem S.getSyncIssue()) là 1
+ * lỗi THẬT gặp phải lúc đồng bộ — ưu tiên hiện lỗi này lên trước, kèm màu đỏ, để không còn "im lặng"
+ * như trước (xem state.js).
+ *
+ * KHÔNG còn dùng navigator.onLine để đoán/nói "đang mất mạng" nữa — cờ này không đáng tin cậy 100%
+ * (khác nhau tùy trình duyệt/cách mô phỏng mất mạng lúc test), lỡ nói sai "đang mất mạng" trong khi
+ * THẬT RA đang có mạng (đúng lỗi người dùng gặp phải) sẽ khiến người dùng tưởng nhầm là máy mình mất
+ * mạng dù không phải. Giờ chỉ nói đúng những gì CHẮC CHẮN biết: có N việc đang chờ lên máy chủ. */
 export function updateSyncBanner(pendingCount, syncIssue) {
   const el = document.getElementById('sync-banner');
   if (!el) return;
-  const offline = typeof navigator !== 'undefined' && navigator.onLine === false;
-  if (!offline && !pendingCount && !syncIssue) { el.hidden = true; return; }
+  if (!pendingCount && !syncIssue) { el.hidden = true; return; }
   el.hidden = false;
   el.classList.toggle('sync-banner-error', !!syncIssue);
   if (syncIssue) {
     el.textContent = syncIssue.message;
-  } else if (offline) {
-    el.textContent = pendingCount
-      ? `Đang mất mạng — ${pendingCount} thay đổi sẽ tự đồng bộ khi có mạng lại.`
-      : 'Đang mất mạng — vẫn xem/ghi dữ liệu bình thường, sẽ tự đồng bộ khi có mạng lại.';
   } else {
     el.textContent = `Đang đồng bộ ${pendingCount} thay đổi lên máy chủ...`;
   }

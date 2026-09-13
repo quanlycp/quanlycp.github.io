@@ -197,7 +197,13 @@ export async function syncOutbox() {
   try {
     const session = getSession();
     const sb = getSupabaseClient(session?.sbToken);
-    while (state.outbox.length) {
+    // Giới hạn an toàn: đủ lượt bằng cả hàng đợi (x2 cho rộng rãi) thì DỪNG HẲN vòng lặp này dù chưa
+    // xong — tránh treo trình duyệt vô thời hạn nếu lỡ NHIỀU item đều bị "đẩy xuống cuối" (xem dưới)
+    // rồi vòng lại gặp nhau mãi trong CÙNG 1 lần gọi (không xảy ra trong thực tế thường thì, nhưng
+    // phải chặn được về mặt lý thuyết).
+    let cycles = 0;
+    const cycleLimit = state.outbox.length * 2 + 4;
+    while (state.outbox.length && cycles++ < cycleLimit) {
       const op = state.outbox[0];
       let q = sb.from(op.table);
       if (op.method === 'insert') q = q.insert(op.payload);
@@ -208,10 +214,19 @@ export async function syncOutbox() {
       if (error) {
         op.attempts = (op.attempts || 0) + 1;
         if (!isNetworkError(error)) {
-          // Lỗi THẬT (VD RLS từ chối, thiếu cột, sai kiểu dữ liệu...) — KHÔNG phải cứ retry là tự hết,
-          // giữ lại đây để người dùng/chủ sổ thấy ngay mà báo, thay vì tưởng "đang đồng bộ" mãi.
-          console.warn(`syncOutbox: lỗi THẬT (không phải mất mạng) trên bảng ${op.table}, dừng hàng đợi lại:`, error.message || error);
+          // Lỗi THẬT (VD RLS từ chối, thiếu cột, sai kiểu dữ liệu...) — KHÔNG phải cứ retry là tự hết.
+          console.warn(`syncOutbox: lỗi THẬT (không phải mất mạng) trên bảng ${op.table}:`, error.message || error);
           lastSyncIssue = { message: `Lỗi đồng bộ (bảng ${op.table}): ${error.message || error}` };
+          if (op.attempts >= STUCK_RETRY_WARN_AFTER && state.outbox.length > 1) {
+            // Đã thử vài lần vẫn y hệt lỗi này — KHÔNG xóa (không mất dữ liệu), nhưng ĐẨY XUỐNG CUỐI
+            // hàng đợi để các việc KHÔNG LIÊN QUAN phía sau vẫn có cơ hội lên được, thay vì bị đúng 1
+            // dòng hỏng chặn đứng TẤT CẢ mãi mãi (kể cả của thao tác hoàn toàn khác sau này). Dòng bị
+            // đẩy xuống vẫn tiếp tục tự thử lại ở vòng sau (kể cả trong lần gọi syncOutbox() kế tiếp).
+            state.outbox.shift();
+            state.outbox.push(op);
+            persist();
+            continue;
+          }
         } else {
           console.warn('syncOutbox: lỗi mạng, giữ lại thử lần sau:', error.message || error);
           if (op.attempts >= STUCK_RETRY_WARN_AFTER) {
