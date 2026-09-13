@@ -760,10 +760,14 @@ worker.js` cũng được sửa để lưu sẵn "vỏ" app (giao diện) vào b
 Có 1 dải màu vàng phía trên đầu trang khi còn thay đổi chưa đồng bộ (kể cả bước điền hộ nếu bị rớt lại
 hàng đợi) — chữ hiện ra phân biệt rõ "đang chờ có mạng" (đang mất mạng, chưa có gì đang chạy) hay
 "đang đồng bộ" (có mạng, đang thật sự gửi lên) — để biết ngay là dữ liệu chưa lên tới máy chủ, tránh
-tưởng nhầm là mất dữ liệu. Nếu gặp 1 lỗi THẬT lúc đồng bộ (không phải chỉ đang chờ có mạng — VD dữ
-liệu bị từ chối, hoặc bước điền hộ thử nhiều lần vẫn không được) thì dải này chuyển sang **màu đỏ**
-kèm mô tả lỗi cụ thể, để không còn "im lặng mãi" như trước — báo lại đúng nội dung dải đỏ đó nếu cần
-hỗ trợ.
+tưởng nhầm là mất dữ liệu. Xong hẳn (từ còn việc chờ về hết sạch) thì dải này TỰ ẨN NGAY + báo 1 toast
+"Đã đồng bộ xong..." — việc phát hiện "vừa xong" này gộp về ĐÚNG 1 chỗ (`refreshSyncUI()` trong
+`js/app.js`) dùng chung cho MỌI đường có thể khiến việc đồng bộ hoàn tất (hẹn giờ, sự kiện mạng, hay
+chính lúc điền hộ mirror tự xử lý xong ở nền) — tránh tình trạng đồng bộ xong thật nhưng banner cũ vẫn
+còn treo đó do lỡ có đường nào không đi qua đúng chỗ kiểm tra. Nếu gặp 1 lỗi THẬT lúc đồng bộ (không
+phải chỉ đang chờ có mạng — VD dữ liệu bị từ chối, hoặc bước điền hộ thử nhiều lần vẫn không được) thì
+dải này chuyển sang **màu đỏ** kèm mô tả lỗi cụ thể, để không còn "im lặng mãi" như trước — báo lại
+đúng nội dung dải đỏ đó nếu cần hỗ trợ.
 
 **Phạm vi hiện tại** — các mục khác vẫn cần có mạng như trước (có thể bổ sung sau nếu cần):
 Danh mục, Ngân sách, Định kỳ, Tiết kiệm, Kế hoạch, Thông báo, Quản lý User, Cài đặt, và phía "Cho

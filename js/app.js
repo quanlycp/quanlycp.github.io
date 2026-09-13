@@ -92,7 +92,7 @@ function renderApp({ scrollTop = true } = {}) {
   if (match.view.renderHeader) match.view.renderHeader(headerEl);
   match.view.render(contentEl, filterEl, query);
   updateActiveNav(path);
-  updateSyncBanner(S.pendingSyncCount(), S.getSyncIssue());
+  refreshSyncUI(); // xem giải thích đầy đủ ở chỗ khai báo hàm này bên dưới.
 }
 
 window.addEventListener('hashchange', () => {
@@ -107,6 +107,26 @@ window.addEventListener('hashchange', () => {
 });
 window.addEventListener('qtd:logout', () => { closeAllModals(); S.logout(); location.hash = '#/'; renderApp(); });
 
+// Trạng thái CUỐI CÙNG đã biết của "còn N việc chờ đồng bộ" — DÙNG CHUNG DUY NHẤT 1 CHỖ (refreshSyncUI
+// bên dưới) để phát hiện đúng lúc chuyển từ CÒN (>0) sang HẾT (0) mà báo toast "đã xong" + vẽ lại
+// banner ẩn đi. TRƯỚC ĐÂY việc so sánh trước/sau này chỉ nằm trong trySyncNow() — nên 1 lượt đồng bộ
+// được kích hoạt từ NƠI KHÁC (VD state.js tự gọi thẳng syncOutbox() ở nền lúc điền hộ mirror bị lỗi
+// lần đầu rồi hàng đợi tự xử lý xong sau đó, KHÔNG đi qua trySyncNow()) vẫn đồng bộ xong thật, nhưng
+// không có gì đảm bảo banner được vẽ lại ĐÚNG NGAY LÚC ĐÓ — dễ thấy "báo xong ở lượt khác rồi mà
+// banner cũ vẫn còn treo đó" (đúng lỗi bị báo lại: banner không tự ẩn dù đã đồng bộ xong). Gộp về 1
+// hàm áp dụng cho MỌI lần cần vẽ lại banner (renderApp() mỗi khi có thay đổi, hẹn giờ, sự kiện mạng)
+// giải quyết dứt điểm, không phụ thuộc đường nào gây ra thay đổi.
+let lastKnownPending = 0;
+function refreshSyncUI() {
+  if (!root) return;
+  const pending = S.pendingSyncCount();
+  const issue = S.getSyncIssue();
+  if (lastKnownPending > 0 && pending === 0 && !issue) {
+    toast('Đã đồng bộ xong tất cả thay đổi lên máy chủ', 'success');
+  }
+  lastKnownPending = pending;
+  updateSyncBanner(pending, issue);
+}
 // Có mạng trở lại (sau khi mất mạng) -> tự đẩy các thay đổi đã ghi tạm lúc
 // offline (outbox trong state.js) lên máy chủ NGAY, khỏi cần đợi thao tác kế
 // tiếp mới nhận ra là đã có mạng. Bắt CẢ 3 kiểu tín hiệu vì trên điện thoại,
@@ -117,27 +137,12 @@ window.addEventListener('qtd:logout', () => { closeAllModals(); S.logout(); loca
 // - 'online': có mạng lại trong khi app đang mở/đang xem.
 // - visibilitychange/focus: MỞ LẠI app (từ nền/khóa màn hình) — luôn thử
 //   đồng bộ ngay lúc này, không cần biết trước đó 'online' đã bắn hay chưa.
-// - setInterval: hẹn giờ dự phòng, rút ngắn còn 5 giây (thay vì 20 giây) vì
-//   bản thân việc kiểm tra gần như miễn phí (chỉ thật sự gọi mạng khi ĐANG
-//   có việc chờ đồng bộ) — tránh cảm giác "phải chờ lâu mới thấy đồng bộ".
-// Trước đây "Đang đồng bộ..." cứ hiện mãi mà không có gì báo lúc XONG (chỉ tự ẩn banner đi, dễ tưởng
-// nhầm là "không biết có xong chưa") — giờ so sánh số việc còn chờ TRƯỚC/SAU mỗi lần thử: từ >0 về
-// hẳn 0 mới coi là "vừa đồng bộ xong" -> báo 1 toast thành công rõ ràng. KHÔNG còn đòi hỏi thêm
-// "không có lỗi thật" (S.getSyncIssue()) như trước — pendingSyncCount() giờ đã tự loại các item bị
-// đánh dấu `stuck` (lỗi thật lặp lại nhiều lần, xem state.js) ra khỏi số đếm, nhưng banner đỏ của
-// item đó vẫn hiện riêng qua getSyncIssue(); nếu vẫn bắt đợi hết sạch lỗi mới báo "xong" thì 1 item
-// bị kẹt (có thể không bao giờ tự hết) sẽ chặn đứng luôn thông báo "xong" của MỌI thay đổi khác,
-// không liên quan, mãi mãi.
 async function trySyncNow() {
-  const hadPending = S.pendingSyncCount() > 0;
   await S.syncOutbox();
-  if (hadPending && S.pendingSyncCount() === 0) {
-    toast('Đã đồng bộ xong tất cả thay đổi lên máy chủ', 'success');
-  }
-  if (root) updateSyncBanner(S.pendingSyncCount(), S.getSyncIssue());
+  refreshSyncUI();
 }
 window.addEventListener('online', trySyncNow);
-window.addEventListener('offline', () => { if (root) updateSyncBanner(S.pendingSyncCount(), S.getSyncIssue()); });
+window.addEventListener('offline', refreshSyncUI);
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') trySyncNow(); });
 window.addEventListener('focus', trySyncNow);
 // CHẶN việc gọi mạng khi CHẮC CHẮN đang mất mạng giờ nằm NGAY BÊN TRONG S.syncOutbox() (xem state.js)
@@ -147,7 +152,7 @@ window.addEventListener('focus', trySyncNow);
 // việc chặn còn nằm rải rác ở đây) — chỉ đơn giản là 1 lượt kiểm tra rẻ, cập nhật banner + thử đồng bộ
 // nếu còn việc chờ; có mạng thật thì tự đi qua, mất mạng thì tự no-op, không hiện lỗi gì cả.
 setInterval(() => {
-  if (root) updateSyncBanner(S.pendingSyncCount(), S.getSyncIssue());
+  refreshSyncUI();
   if (S.pendingSyncCount() > 0) trySyncNow();
 }, 5000);
 
