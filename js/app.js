@@ -93,7 +93,16 @@ function renderApp({ scrollTop = true } = {}) {
   updateActiveNav(path);
 }
 
-window.addEventListener('hashchange', () => { closeAllModals(); renderApp(); });
+window.addEventListener('hashchange', () => {
+  closeAllModals();
+  renderApp();
+  // Vào trang Công nợ luôn tự tải lại dữ liệu mới nhất ở NỀN (không chặn màn hình) — trang này hay
+  // có dữ liệu do NGƯỜI KHÁC ghi hộ (VD Mượn nợ chọn 1 thành viên tự điền sang "Người khác nợ tôi"
+  // của họ qua Edge Function), phiên hiện tại không tự biết để cập nhật cho tới khi tải lại trang
+  // (đăng xuất/đăng nhập lại) — giờ chỉ cần bấm vào đúng trang Công nợ là đã tự cập nhật, khỏi phải
+  // thoát app ra vào lại. Đặt SAU renderApp() (đã tự vẽ ngay bằng dữ liệu cũ, không phải chờ mạng).
+  if (splitHash().path === '#/no') S.refresh();
+});
 window.addEventListener('qtd:logout', () => { closeAllModals(); S.logout(); location.hash = '#/'; renderApp(); });
 
 window.addEventListener('DOMContentLoaded', async () => {
