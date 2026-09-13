@@ -122,11 +122,16 @@ window.addEventListener('qtd:logout', () => { closeAllModals(); S.logout(); loca
 //   có việc chờ đồng bộ) — tránh cảm giác "phải chờ lâu mới thấy đồng bộ".
 // Trước đây "Đang đồng bộ..." cứ hiện mãi mà không có gì báo lúc XONG (chỉ tự ẩn banner đi, dễ tưởng
 // nhầm là "không biết có xong chưa") — giờ so sánh số việc còn chờ TRƯỚC/SAU mỗi lần thử: từ >0 về
-// hẳn 0 (và không có lỗi thật) mới coi là "vừa đồng bộ xong" -> báo 1 toast thành công rõ ràng.
+// hẳn 0 mới coi là "vừa đồng bộ xong" -> báo 1 toast thành công rõ ràng. KHÔNG còn đòi hỏi thêm
+// "không có lỗi thật" (S.getSyncIssue()) như trước — pendingSyncCount() giờ đã tự loại các item bị
+// đánh dấu `stuck` (lỗi thật lặp lại nhiều lần, xem state.js) ra khỏi số đếm, nhưng banner đỏ của
+// item đó vẫn hiện riêng qua getSyncIssue(); nếu vẫn bắt đợi hết sạch lỗi mới báo "xong" thì 1 item
+// bị kẹt (có thể không bao giờ tự hết) sẽ chặn đứng luôn thông báo "xong" của MỌI thay đổi khác,
+// không liên quan, mãi mãi.
 async function trySyncNow() {
   const hadPending = S.pendingSyncCount() > 0;
   await S.syncOutbox();
-  if (hadPending && S.pendingSyncCount() === 0 && !S.getSyncIssue()) {
+  if (hadPending && S.pendingSyncCount() === 0) {
     toast('Đã đồng bộ xong tất cả thay đổi lên máy chủ', 'success');
   }
   if (root) updateSyncBanner(S.pendingSyncCount(), S.getSyncIssue());
