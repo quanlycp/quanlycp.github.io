@@ -103,7 +103,7 @@ function queueWrite(table, method, payload, match) {
 // "Failed to fetch" như mất mạng thật, KHÔNG cách nào phân biệt được từ phía trình duyệt) chứ không
 // phải mất mạng thật, thì sau chừng này lần thử vẫn y hệt lỗi -> báo rõ thay vì "đang đồng bộ" mãi mãi
 // mà không ai biết vì sao (vẫn giữ lại hàng đợi để tiếp tục thử, không rớt mất dữ liệu).
-const STUCK_RETRY_WARN_AFTER = 8;
+const STUCK_RETRY_WARN_AFTER = 4;
 /** Xếp 1 việc mirror (điền hộ sang sổ riêng thành viên) còn dang dở vào hàng đợi riêng — xem
  * processPendingMirrors() phía dưới. `job.op`: 'add' (cần creditorId+entryId, tự tìm lại đúng dòng
  * đó lúc xử lý), 'update'/'delete' (cần mirrorEntryId — dòng mirror ĐÃ có sẵn từ trước, giờ cần sửa/
@@ -1172,7 +1172,7 @@ async function performMirrorDelete(mirrorEntryId, sbToken) {
 // viên KHÔNG BAO GIỜ nhận được dòng mirror mà không ai biết. Giờ cho thử lại tối đa
 // MIRROR_JOB_MAX_ATTEMPTS lần (mỗi lần syncOutbox() được gọi mới tính là 1 lần) trước khi thật sự bỏ
 // cuộc — lúc đó mới báo rõ qua lastSyncIssue, không im lặng nữa.
-const MIRROR_JOB_MAX_ATTEMPTS = 15;
+const MIRROR_JOB_MAX_ATTEMPTS = 6;
 /** Làm hết hàng đợi mirror còn dang dở (state.pendingMirrors) — gọi từ syncOutbox() SAU khi outbox
  * chính đã trống hẳn (creditor/dòng sổ nợ chắc chắn đã có thật trên Supabase để lưu con trỏ mirror_*
  * ngược lại). Gặp lỗi MẠNG thì dừng lại NGAY, giữ nguyên hàng đợi để thử lại lần sau. */
@@ -1290,14 +1290,17 @@ export async function addDebtCharge({ creditorId, creditorName, memberUserId, sh
       console.warn('addDebtCharge: chọn thành viên nhưng creditor không có memberUserId — có thể trùng tên với sổ nợ người ngoài có sẵn.');
       return { mirrorFailed: true };
     }
-    if (!creditor.memberUserId) return { mirrorFailed: false };
+    if (!creditor.memberUserId) return { mirrorFailed: false, mirrorSkipped: true }; // chủ nợ "người ngoài" — không có gì để điền hộ, KHÔNG phải lỗi.
     // Mất mạng -> xếp vào hàng đợi riêng (state.pendingMirrors), TỰ làm hộ khi có mạng lại (xem
     // processPendingMirrors()) — khỏi cần người dùng tự làm lại thao tác này.
     if (!isOnline()) { queueMirrorJob({ op: 'add', creditorId: creditor.id, entryId: entry.id, debtKind: 'charge', amount: chargeAmount, date: entryDate }); return { mirrorFailed: true, offline: true }; }
     const result = await performMirrorAdd(creditor, entry, { debtKind: 'charge', amount: chargeAmount, date: entryDate, sbToken: session?.sbToken });
     if (result.status === 'network') { queueMirrorJob({ op: 'add', creditorId: creditor.id, entryId: entry.id, debtKind: 'charge', amount: chargeAmount, date: entryDate }); return { mirrorFailed: true, offline: true }; }
     if (result.status === 'error') markMirrorFailure(result.reason); // đang ONLINE mà vẫn lỗi thật -> báo LÊN BANNER (giữ lại được, không như toast biến mất sau vài giây), xem markMirrorFailure().
-    return { mirrorFailed: result.status !== 'ok' };
+    // mirrorOk: true khi THẬT SỰ đã điền hộ thành công — dùng để báo 1 toast thành công rõ ràng ở
+    // txnForm.js, thay vì im lặng hoàn toàn lúc thành công như trước (không có cách nào phân biệt
+    // được với "chủ nợ người ngoài, không cần điền" nếu chỉ nhìn `mirrorFailed: false`).
+    return { mirrorFailed: result.status !== 'ok', mirrorOk: result.status === 'ok' };
   })();
 
   return { creditorId: creditor.id, transactionId: txnRow?.id || null, mirrorPromise };
@@ -1343,12 +1346,12 @@ export async function addDebtPayment(creditorId, { amount, date, categoryId, des
   // họ, xem addDebtCharge) -> tự thêm dòng "collect" bên sổ riêng đó luôn, cho khớp với Nợ chung.
   // Chạy NỀN (không await ở đây), xem addDebtCharge.
   const mirrorPromise = (async () => {
-    if (!(creditor.memberUserId && creditor.mirrorDebtorId)) return { mirrorFailed: false };
+    if (!(creditor.memberUserId && creditor.mirrorDebtorId)) return { mirrorFailed: false, mirrorSkipped: true };
     if (!isOnline()) { queueMirrorJob({ op: 'add', creditorId: creditor.id, entryId: entry.id, debtKind: 'payment', amount: payAmount, date: payDate }); return { mirrorFailed: true, offline: true }; }
     const result = await performMirrorAdd(creditor, entry, { debtKind: 'payment', amount: payAmount, date: payDate, sbToken: session?.sbToken });
     if (result.status === 'network') { queueMirrorJob({ op: 'add', creditorId: creditor.id, entryId: entry.id, debtKind: 'payment', amount: payAmount, date: payDate }); return { mirrorFailed: true, offline: true }; }
     if (result.status === 'error') markMirrorFailure(result.reason);
-    return { mirrorFailed: result.status !== 'ok' };
+    return { mirrorFailed: result.status !== 'ok', mirrorOk: result.status === 'ok' };
   })();
 
   return { transactionId: txnRow?.id || null, mirrorPromise };

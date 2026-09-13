@@ -135,7 +135,16 @@ window.addEventListener('online', trySyncNow);
 window.addEventListener('offline', () => { if (root) updateSyncBanner(S.pendingSyncCount(), S.getSyncIssue()); });
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') trySyncNow(); });
 window.addEventListener('focus', trySyncNow);
+// LỖI THẬT đã tìm ra: trước đây hẹn giờ dưới đây CHỈ làm gì đó (gọi trySyncNow, cũng là nơi DUY NHẤT
+// gọi updateSyncBanner ở khối này) khi ĐANG CÓ việc chờ đồng bộ — nếu không còn gì chờ (VD chỉ đơn
+// giản bật/tắt mạng, không thao tác gì) mà đúng lúc đó sự kiện 'online'/'offline'/visibilitychange/
+// focus của trình duyệt KHÔNG bắn ra (biết là không đáng tin cậy 100%, xem chú thích ở trên) thì
+// KHÔNG CÓ GÌ cập nhật lại dải banner nữa — dải "Đang mất mạng" cứ đứng yên MÃI MÃI dù thật ra đã có
+// mạng lại từ lâu. Giờ tách riêng: LUÔN cập nhật lại banner mỗi 5 giây (rẻ, chỉ đọc navigator.onLine +
+// vẽ lại DOM, không gọi mạng) bất kể có gì để đồng bộ hay không; CHỈ gọi trySyncNow() (có gọi mạng)
+// khi thật sự đang có việc chờ.
 setInterval(() => {
+  if (root) updateSyncBanner(S.pendingSyncCount(), S.getSyncIssue());
   if (navigator.onLine !== false && S.pendingSyncCount() > 0) trySyncNow();
 }, 5000);
 
