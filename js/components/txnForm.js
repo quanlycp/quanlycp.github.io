@@ -123,6 +123,10 @@ export function openTransactionForm({ transaction, defaultType = 'expense', onSa
                 toast('Đang mất mạng — đã ghi vào Nợ chung, sẽ TỰ điền sang sổ riêng của thành viên đó khi có mạng lại, không cần làm tay.', 'default');
               } else if (r?.mirrorFailed) {
                 toast('Đã ghi vào Nợ chung, nhưng CHƯA điền/đồng bộ được vào sổ riêng của thành viên đó — kiểm tra lại đã chạy đủ SQL/deploy Edge Function mới chưa (xem docs mục 13).', 'error');
+              } else if (r?.mirrorOk) {
+                // Báo THÀNH CÔNG rõ ràng (trước đây thành công thì im lặng hoàn toàn) — để biết chắc
+                // bước điền hộ CÓ chạy và CÓ được Edge Function xác nhận "ok", không phải đoán mò.
+                toast('Đã tự điền sang sổ riêng "Người khác nợ tôi" của thành viên đó.', 'success');
               }
             });
           }
