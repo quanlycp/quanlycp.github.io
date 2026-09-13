@@ -164,27 +164,41 @@ window.addEventListener('DOMContentLoaded', async () => {
 // Chrome bình thường — đúng hiện tượng thấy thanh địa chỉ như đang mở Chrome.
 //
 // updateViaCache:'none': mỗi lần code cập nhật, tab ĐANG MỞ (không riêng gì lần mở mới) tự nhận
-// bản mới ở NỀN — không cần ai bấm F12/xóa cache tay. TRƯỚC ĐÂY tự location.reload() NGAY khi có
-// bản mới kiểm soát trang — gây khó chịu THẬT (mất dữ liệu đang gõ dở, xem bản sửa trước). Nhưng bỏ
-// HẲN việc báo gì cũng dở không kém: bản mới có kiểm soát trang xong thì CHỈ ảnh hưởng các REQUEST
-// MẠNG sau đó (VD gọi lại app.js) — CODE ĐANG CHẠY TRONG BỘ NHỚ của tab vẫn y hệt code CŨ cho tới
-// khi trang thật sự tải lại; đóng/mở lại 1 app "Thêm vào màn hình chính" (không tắt hẳn tiến trình)
-// nhiều khi KHÔNG tính là tải lại thật, người dùng dễ tưởng đã lấy bản mới nhưng thật ra chưa. Giờ
-// hiện 1 dải nhỏ có nút "Tải lại ngay" khi có bản mới — không TỰ ép ai, nhưng cũng không im lặng
-// hoàn toàn: người dùng chủ động bấm lúc tiện, không sợ bị mất dữ liệu đang thao tác dở.
+// bản mới ở NỀN — không cần ai bấm F12/xóa cache tay.
+//
+// LỖI THẬT vừa tìm ra (rất có thể là lý do "sửa hoài không thấy tác dụng" suốt các vòng trước): gọi
+// reg.update() CHỈ 1 LẦN lúc mới mở trang (sự kiện 'load' chỉ bắn ra đúng 1 lần) — sau đó KHÔNG CÓ GÌ
+// chủ động kiểm tra lại bản mới nữa nếu tab cứ để MỞ LIÊN TỤC (như lúc đang thử nghiệm nhiều bản sửa
+// liên tiếp trong 1 phiên dài) — trình duyệt tự kiểm tra định kỳ nhưng RẤT THƯA (có thể cả giờ/cả
+// ngày mới tới lượt), khiến tab có thể vẫn đang chạy ĐÚNG bản code từ lúc mở lên ban đầu suốt nhiều
+// giờ, dù đã có hàng chục bản sửa mới. Giờ chủ động tự kiểm tra lại mỗi 30 giây trong lúc tab mở.
+//
+// Và thay vì CHỈ hiện dải "Tải lại ngay" chờ người dùng tự bấm (rất dễ bị bỏ qua/không để ý), giờ tự
+// TẢI LẠI NGAY LẬP TỨC mỗi khi phát hiện bản mới — TRỪ lúc đang gõ dở 1 ô nhập liệu (input/textarea)
+// thì mới hoãn lại, hiện dải này để không ép mất chữ đang gõ. Làm vậy vừa không mất dữ liệu đang gõ
+// dở (vấn đề ban đầu khiến bỏ hẳn tự động tải lại), vừa đảm bảo bản mới ÁP DỤNG NGAY chứ không phải
+// chờ người dùng hiểu ý nghĩa dải thông báo rồi tự bấm.
+function isTypingSomewhere() {
+  const el = document.activeElement;
+  return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
+}
 if ('serviceWorker' in navigator) {
   const hadControllerAtLoad = !!navigator.serviceWorker.controller;
   navigator.serviceWorker.addEventListener('controllerchange', () => {
     // Lần "claim" ĐẦU TIÊN (mở app lần đầu, trước đó chưa có SW nào kiểm soát) cũng bắn ra sự kiện
-    // này nhưng KHÔNG phải "có bản mới" — chỉ báo khi ĐANG có 1 SW khác kiểm soát rồi mới đổi sang
-    // SW mới (đúng nghĩa "vừa cập nhật"), tránh hiện nhầm dải này ngay lần đầu cài đặt.
-    if (hadControllerAtLoad) showUpdateBanner();
+    // này nhưng KHÔNG phải "có bản mới" — chỉ xử lý khi ĐANG có 1 SW khác kiểm soát rồi mới đổi sang
+    // SW mới (đúng nghĩa "vừa cập nhật"), tránh tải lại nhầm ngay lần đầu cài đặt.
+    if (!hadControllerAtLoad) return;
+    if (isTypingSomewhere()) showUpdateBanner();
+    else location.reload();
   });
+  let swReg = null;
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('service-worker.js', { updateViaCache: 'none' })
-      .then((reg) => { reg.update().catch(() => {}); })
+      .then((reg) => { swReg = reg; reg.update().catch(() => {}); })
       .catch((e) => console.warn('Không đăng ký được service worker.', e));
   });
+  setInterval(() => { if (swReg) swReg.update().catch(() => {}); }, 30000);
 }
 function showUpdateBanner() {
   if (document.getElementById('update-banner')) return;
@@ -194,6 +208,16 @@ function showUpdateBanner() {
   el.innerHTML = '<span>Đã có bản cập nhật mới.</span><button type="button" id="update-banner-btn">Tải lại ngay</button>';
   document.body.appendChild(el);
   el.querySelector('#update-banner-btn').addEventListener('click', () => location.reload());
+  // Vừa xong ô đang gõ (rời khỏi input/textarea, VD bấm nút khác) mà dải này vẫn còn hiện -> giờ an
+  // toàn để tự tải lại luôn, khỏi phải chờ người dùng để ý bấm "Tải lại ngay".
+  document.addEventListener('focusout', function autoReloadWhenIdle() {
+    setTimeout(() => {
+      if (document.getElementById('update-banner') && !isTypingSomewhere()) {
+        document.removeEventListener('focusout', autoReloadWhenIdle);
+        location.reload();
+      }
+    }, 300);
+  });
 }
 
 // Mọi thay đổi dữ liệu (xóa/tạo/sửa...) đều gọi notify() và kích hoạt render
