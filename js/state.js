@@ -114,6 +114,17 @@ function queueMirrorJob(job) {
   state.pendingMirrors.push({ id: genId('mirrorjob'), ...job });
   persist();
 }
+/** Xếp 1 việc mirror vào hàng đợi RỒI (nếu đang online) kích hoạt đồng bộ NGAY — dùng CHUNG đúng 1
+ * đường cho cả lúc online lẫn offline, thay vì tách riêng "thử ngay 1 lần, báo qua toast RIÊNG nếu
+ * lỗi" (online) với "xếp hàng, tự làm khi có mạng" (offline) như trước. Lý do đổi: toast riêng cho
+ * lúc online rất dễ bị bỏ lỡ (chỉ hiện ~2 giây, mất luôn dấu vết), trong khi hàng đợi chung đã có sẵn
+ * NGUYÊN 1 bộ máy đáng tin cậy người dùng đang trực tiếp theo dõi — dải banner (hiện số việc đang
+ * chờ, tự ẩn khi xong), báo lỗi rõ sau vài lần thử vẫn không xong, và toast "đã đồng bộ xong" khi
+ * hàng đợi về 0. Không await ở đây — chạy NỀN, khỏi chặn thao tác vừa làm. */
+function queueAndKickMirror(job) {
+  queueMirrorJob(job);
+  if (isOnline()) syncOutbox();
+}
 function applyMatch(query, match) {
   if (!match) return query;
   for (const m of (Array.isArray(match) ? match : [match])) query = query.eq(m.column, m.value);
@@ -154,15 +165,6 @@ export function pendingSyncCount() { return state.outbox.length + (state.pending
 // shell.js) thay vì im lặng mãi. KHÔNG lưu vào localStorage (chỉ để hiện tạm thời trong phiên hiện tại).
 let lastSyncIssue = null;
 export function getSyncIssue() { return lastSyncIssue; }
-/** Báo 1 lỗi THẬT (không phải mất mạng) gặp phải lúc điền hộ mirror lúc ĐANG ONLINE (không đi qua
- * outbox/pendingMirrors nên không tự có cơ hội hiện lên banner) — VD Edge Function trả lỗi/từ chối
- * ngay lần thử đầu. Trước đây chỉ có 1 toast thoáng qua ~2 giây (dễ bỏ lỡ, nhất là đang bận thao tác
- * khác) rồi biến mất, không còn dấu vết gì để biết CHÍNH XÁC lý do — giờ lưu lại lên banner đỏ (đứng
- * yên tới khi hết lỗi) kèm gọi notify() để hiện NGAY, không cần đợi thao tác kế tiếp mới thấy. */
-function markMirrorFailure(reason) {
-  lastSyncIssue = { message: `Không tự điền được sang sổ riêng thành viên${reason ? ` — lý do: ${reason}` : ''} (xem docs mục 13.3 để kiểm tra đã deploy đủ Edge Function chưa).` };
-  notify();
-}
 
 let syncingOutbox = false;
 /** Gửi hết hàng đợi lên Supabase theo ĐÚNG THỨ TỰ đã ghi, xong mới xử lý tiếp hàng đợi mirror (xem
@@ -717,13 +719,7 @@ export async function updateTransaction(id, { type, amount, categoryId, note, da
         state.pendingMirrors[pendingAddIdx].date = date;
         persist();
       } else if (linked.entry.mirrorEntryId) {
-        if (!isOnline()) {
-          queueMirrorJob({ op: 'update', entryId: linked.entry.id, mirrorEntryId: linked.entry.mirrorEntryId, amount: newAmount, date, debtKind: linked.entry.kind });
-        } else {
-          const result = await performMirrorUpdate(linked.entry.mirrorEntryId, { amount: newAmount, date, debtKind: linked.entry.kind, sbToken: session?.sbToken });
-          if (result.status === 'network') queueMirrorJob({ op: 'update', entryId: linked.entry.id, mirrorEntryId: linked.entry.mirrorEntryId, amount: newAmount, date, debtKind: linked.entry.kind });
-          else if (result.status === 'error') markMirrorFailure(result.reason);
-        }
+        queueAndKickMirror({ op: 'update', entryId: linked.entry.id, mirrorEntryId: linked.entry.mirrorEntryId, amount: newAmount, date, debtKind: linked.entry.kind });
       }
     }
   }
@@ -749,13 +745,7 @@ export async function deleteTransaction(id) {
         if (state.pendingMirrors.length !== before) persist();
       }
       if (linked.entry.mirrorEntryId) {
-        if (!isOnline()) {
-          queueMirrorJob({ op: 'delete', entryId: linked.entry.id, mirrorEntryId: linked.entry.mirrorEntryId });
-        } else {
-          const result = await performMirrorDelete(linked.entry.mirrorEntryId, session?.sbToken);
-          if (result.status === 'network') queueMirrorJob({ op: 'delete', entryId: linked.entry.id, mirrorEntryId: linked.entry.mirrorEntryId });
-          else if (result.status === 'error') markMirrorFailure(result.reason);
-        }
+        queueAndKickMirror({ op: 'delete', entryId: linked.entry.id, mirrorEntryId: linked.entry.mirrorEntryId });
       }
     } else {
       state.receivableEntries = state.receivableEntries.filter((e) => e.id !== linked.entry.id);
@@ -1293,33 +1283,21 @@ export async function addDebtCharge({ creditorId, creditorName, memberUserId, sh
   notify(); // vẽ ngay phần Nợ chung — KHÔNG chờ bước điền hộ mirror bên dưới (mạng chậm/edge function
             // phản hồi lâu sẽ khiến form Thêm giao dịch bị đứng chờ nếu để chặn ở đây).
 
-  // Mượn của 1 thành viên trong sổ -> tự điền hộ vào sổ "Người khác nợ tôi" riêng của họ (xem
-  // performMirrorAdd()) — chạy NỀN (không await ở đây), trả về 1 Promise để nơi gọi (txnForm.js) tự
-  // chờ riêng rồi báo cho người dùng biết SAU nếu bước điền hộ này thất bại (VD chưa deploy đủ Edge
-  // Function/SQL mới) — Nợ chung vẫn đã ghi đúng và hiện ra ngay ở trên, không phải chờ bước này.
-  const mirrorPromise = (async () => {
-    if (memberUserId && !creditor.memberUserId) {
-      // Đã chọn thành viên nhưng chủ nợ tìm/tạo ra lại KHÔNG gắn memberUserId — trước đây từng xảy
-      // ra khi trùng tên với 1 sổ "người ngoài" có sẵn nên bị nhận nhầm (đã sửa ở
-      // findOpenCreditorByName), giữ lại nhánh này để nếu vẫn xảy ra (sổ cũ tạo từ trước bản sửa)
-      // thì báo rõ thay vì im lặng.
-      console.warn('addDebtCharge: chọn thành viên nhưng creditor không có memberUserId — có thể trùng tên với sổ nợ người ngoài có sẵn.');
-      return { mirrorFailed: true };
-    }
-    if (!creditor.memberUserId) return { mirrorFailed: false, mirrorSkipped: true }; // chủ nợ "người ngoài" — không có gì để điền hộ, KHÔNG phải lỗi.
-    // Mất mạng -> xếp vào hàng đợi riêng (state.pendingMirrors), TỰ làm hộ khi có mạng lại (xem
-    // processPendingMirrors()) — khỏi cần người dùng tự làm lại thao tác này.
-    if (!isOnline()) { queueMirrorJob({ op: 'add', creditorId: creditor.id, entryId: entry.id, debtKind: 'charge', amount: chargeAmount, date: entryDate }); return { mirrorFailed: true, offline: true }; }
-    const result = await performMirrorAdd(creditor, entry, { debtKind: 'charge', amount: chargeAmount, date: entryDate, sbToken: session?.sbToken });
-    if (result.status === 'network') { queueMirrorJob({ op: 'add', creditorId: creditor.id, entryId: entry.id, debtKind: 'charge', amount: chargeAmount, date: entryDate }); return { mirrorFailed: true, offline: true }; }
-    if (result.status === 'error') markMirrorFailure(result.reason); // đang ONLINE mà vẫn lỗi thật -> báo LÊN BANNER (giữ lại được, không như toast biến mất sau vài giây), xem markMirrorFailure().
-    // mirrorOk: true khi THẬT SỰ đã điền hộ thành công — dùng để báo 1 toast thành công rõ ràng ở
-    // txnForm.js, thay vì im lặng hoàn toàn lúc thành công như trước (không có cách nào phân biệt
-    // được với "chủ nợ người ngoài, không cần điền" nếu chỉ nhìn `mirrorFailed: false`).
-    return { mirrorFailed: result.status !== 'ok', mirrorOk: result.status === 'ok' };
-  })();
+  // Mượn của 1 thành viên trong sổ -> tự điền hộ vào sổ "Người khác nợ tôi" riêng của họ. LUÔN xếp
+  // vào hàng đợi mirror rồi kích hoạt đồng bộ ngay nếu đang online (xem queueAndKickMirror) — thay vì
+  // tự thử 1 lần riêng rồi báo qua toast (dễ bị bỏ lỡ, xem giải thích ở queueAndKickMirror) — dùng
+  // CHUNG cơ chế banner/toast đồng bộ mà người dùng đã quen theo dõi. Nợ chung đã ghi đúng và hiện ra
+  // ngay ở trên (xem notify() phía trên), không phải chờ bước điền hộ này mới thấy Nợ chung.
+  if (memberUserId && !creditor.memberUserId) {
+    // Đã chọn thành viên nhưng chủ nợ tìm/tạo ra lại KHÔNG gắn memberUserId — trước đây từng xảy ra
+    // khi trùng tên với 1 sổ "người ngoài" có sẵn nên bị nhận nhầm (đã sửa ở findOpenCreditorByName),
+    // giữ lại nhánh này để nếu vẫn xảy ra (sổ cũ tạo từ trước bản sửa) thì báo rõ thay vì im lặng.
+    console.warn('addDebtCharge: chọn thành viên nhưng creditor không có memberUserId — có thể trùng tên với sổ nợ người ngoài có sẵn.');
+  } else if (creditor.memberUserId) {
+    queueAndKickMirror({ op: 'add', creditorId: creditor.id, entryId: entry.id, debtKind: 'charge', amount: chargeAmount, date: entryDate });
+  }
 
-  return { creditorId: creditor.id, transactionId: txnRow?.id || null, mirrorPromise };
+  return { creditorId: creditor.id, transactionId: txnRow?.id || null };
 }
 /** Trả nợ (1 phần hoặc hết) cho 1 chủ nợ. Mặc định KHÔNG đụng thu/chi thật; chỉ tạo giao dịch chi
  * khi addToTransactions=true. Trả về { transactionId } cho nơi gọi cần đồng bộ tiếp (xem addDebtCharge). */
@@ -1360,17 +1338,12 @@ export async function addDebtPayment(creditorId, { amount, date, categoryId, des
 
   // Trả cho 1 chủ nợ là thành viên trong sổ ĐÃ có mirror (đã từng mượn -> đã tự điền hộ sổ riêng của
   // họ, xem addDebtCharge) -> tự thêm dòng "collect" bên sổ riêng đó luôn, cho khớp với Nợ chung.
-  // Chạy NỀN (không await ở đây), xem addDebtCharge.
-  const mirrorPromise = (async () => {
-    if (!(creditor.memberUserId && creditor.mirrorDebtorId)) return { mirrorFailed: false, mirrorSkipped: true };
-    if (!isOnline()) { queueMirrorJob({ op: 'add', creditorId: creditor.id, entryId: entry.id, debtKind: 'payment', amount: payAmount, date: payDate }); return { mirrorFailed: true, offline: true }; }
-    const result = await performMirrorAdd(creditor, entry, { debtKind: 'payment', amount: payAmount, date: payDate, sbToken: session?.sbToken });
-    if (result.status === 'network') { queueMirrorJob({ op: 'add', creditorId: creditor.id, entryId: entry.id, debtKind: 'payment', amount: payAmount, date: payDate }); return { mirrorFailed: true, offline: true }; }
-    if (result.status === 'error') markMirrorFailure(result.reason);
-    return { mirrorFailed: result.status !== 'ok', mirrorOk: result.status === 'ok' };
-  })();
+  // Xem giải thích queueAndKickMirror ở addDebtCharge.
+  if (creditor.memberUserId && creditor.mirrorDebtorId) {
+    queueAndKickMirror({ op: 'add', creditorId: creditor.id, entryId: entry.id, debtKind: 'payment', amount: payAmount, date: payDate });
+  }
 
-  return { transactionId: txnRow?.id || null, mirrorPromise };
+  return { transactionId: txnRow?.id || null };
 }
 /** Sửa 1 dòng ghi nợ/trả nợ. addToTransactions điều khiển việc tạo/xóa/đồng bộ giao dịch thu/chi thật
  * đi kèm (nếu có) — loại giao dịch tự suy ra từ kind (charge=thu, payment=chi, xem addDebtCharge). */
@@ -1432,15 +1405,8 @@ export async function updateDebtEntry(id, { amount, date, description, categoryI
       state.pendingMirrors[pendingAddIdx].date = newDate;
       persist();
     } else if (e.mirrorEntryId) {
-      // Đã mirror xong từ trước (lúc còn mạng) -> giờ sửa lại -> mất mạng thì xếp hàng, có mạng thì
-      // thử ngay (mất mạng GIỮA CHỪNG lúc gọi thì performMirrorUpdate tự báo 'network' để xếp hàng nốt).
-      if (!isOnline()) {
-        queueMirrorJob({ op: 'update', entryId: e.id, mirrorEntryId: e.mirrorEntryId, amount: newAmount, date: newDate, debtKind: e.kind });
-      } else {
-        const result = await performMirrorUpdate(e.mirrorEntryId, { amount: newAmount, date: newDate, debtKind: e.kind, sbToken: session?.sbToken });
-        if (result.status === 'network') queueMirrorJob({ op: 'update', entryId: e.id, mirrorEntryId: e.mirrorEntryId, amount: newAmount, date: newDate, debtKind: e.kind });
-        else if (result.status === 'error') markMirrorFailure(result.reason);
-      }
+      // Đã mirror xong từ trước -> giờ sửa lại -> xếp vào hàng đợi + kích hoạt đồng bộ ngay nếu online.
+      queueAndKickMirror({ op: 'update', entryId: e.id, mirrorEntryId: e.mirrorEntryId, amount: newAmount, date: newDate, debtKind: e.kind });
     }
   }
   notify();
@@ -1467,15 +1433,9 @@ export async function deleteDebtEntry(id) {
     if (state.pendingMirrors.length !== before) persist();
   }
   if (e.mirrorEntryId) {
-    // Dòng này ĐÃ mirror xong từ trước (lúc còn mạng) -> giờ xóa đi cũng phải xóa theo bên sổ riêng
-    // của thành viên đó — mất mạng thì xếp hàng, có mạng thì thử ngay.
-    if (!isOnline()) {
-      queueMirrorJob({ op: 'delete', entryId: id, mirrorEntryId: e.mirrorEntryId });
-    } else {
-      const result = await performMirrorDelete(e.mirrorEntryId, session?.sbToken);
-      if (result.status === 'network') queueMirrorJob({ op: 'delete', entryId: id, mirrorEntryId: e.mirrorEntryId });
-      else if (result.status === 'error') markMirrorFailure(result.reason);
-    }
+    // Dòng này ĐÃ mirror xong từ trước -> giờ xóa đi cũng phải xóa theo bên sổ riêng của thành viên
+    // đó — xếp vào hàng đợi + kích hoạt đồng bộ ngay nếu online.
+    queueAndKickMirror({ op: 'delete', entryId: id, mirrorEntryId: e.mirrorEntryId });
   }
   notify();
 }
