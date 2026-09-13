@@ -107,20 +107,29 @@ window.addEventListener('hashchange', () => {
 window.addEventListener('qtd:logout', () => { closeAllModals(); S.logout(); location.hash = '#/'; renderApp(); });
 
 // Có mạng trở lại (sau khi mất mạng) -> tự đẩy các thay đổi đã ghi tạm lúc
-// offline (outbox trong state.js) lên máy chủ ngay, khỏi cần đợi thao tác kế
-// tiếp mới nhận ra là đã có mạng. Sự kiện 'online' của trình duyệt đôi khi
-// không bắn ra (tùy thiết bị/mạng) nên có thêm hẹn giờ kiểm tra định kỳ ở
-// dưới làm phương án dự phòng.
-window.addEventListener('online', () => {
+// offline (outbox trong state.js) lên máy chủ NGAY, khỏi cần đợi thao tác kế
+// tiếp mới nhận ra là đã có mạng. Bắt CẢ 3 kiểu tín hiệu vì trên điện thoại,
+// tình huống thường gặp nhất là: đang mất mạng -> khóa màn hình/chuyển app
+// khác -> bật lại wifi/4G -> mở app lên lại — lúc đó trình duyệt hay chỉ báo
+// lại đúng lúc quay lại app (visibilitychange/focus) chứ 'online' có thể đã
+// bắn ra từ lúc app đang ở NỀN và bị trình duyệt bỏ qua/trì hoãn xử lý:
+// - 'online': có mạng lại trong khi app đang mở/đang xem.
+// - visibilitychange/focus: MỞ LẠI app (từ nền/khóa màn hình) — luôn thử
+//   đồng bộ ngay lúc này, không cần biết trước đó 'online' đã bắn hay chưa.
+// - setInterval: hẹn giờ dự phòng, rút ngắn còn 5 giây (thay vì 20 giây) vì
+//   bản thân việc kiểm tra gần như miễn phí (chỉ thật sự gọi mạng khi ĐANG
+//   có việc chờ đồng bộ) — tránh cảm giác "phải chờ lâu mới thấy đồng bộ".
+function trySyncNow() {
   S.syncOutbox();
   if (root) updateSyncBanner(S.pendingSyncCount());
-});
-window.addEventListener('offline', () => {
-  if (root) updateSyncBanner(S.pendingSyncCount());
-});
+}
+window.addEventListener('online', trySyncNow);
+window.addEventListener('offline', () => { if (root) updateSyncBanner(S.pendingSyncCount()); });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') trySyncNow(); });
+window.addEventListener('focus', trySyncNow);
 setInterval(() => {
   if (navigator.onLine !== false && S.pendingSyncCount() > 0) S.syncOutbox();
-}, 20000);
+}, 5000);
 
 window.addEventListener('DOMContentLoaded', async () => {
   root = document.getElementById('root');
