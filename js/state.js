@@ -84,9 +84,6 @@ function emptyState() {
 // nhiều nhất) — các mục khác (Danh mục, Ngân sách, Định kỳ, Tiết kiệm, Kế hoạch, Thông báo, Quản lý
 // User, Cài đặt) vẫn cần có mạng như trước, có thể bổ sung sau nếu cần.
 // ------------------------------------------------------------
-function isOnline() {
-  return typeof navigator === 'undefined' || navigator.onLine !== false;
-}
 /** Lỗi có phải do MẠNG không — để phân biệt với lỗi THẬT (dữ liệu sai, bị chặn quyền...): lỗi mạng
  * thì xếp hàng đợi gửi lại sau, lỗi thật thì phải báo ngay, không nên giấu vào hàng đợi. CHỈ xét đúng
  * nội dung thông báo lỗi — KHÔNG còn cộng thêm `!isOnline()` như trước: navigator.onLine không phải
@@ -119,16 +116,17 @@ function queueMirrorJob(job) {
   state.pendingMirrors.push({ id: genId('mirrorjob'), ...job });
   persist();
 }
-/** Xếp 1 việc mirror vào hàng đợi RỒI (nếu đang online) kích hoạt đồng bộ NGAY — dùng CHUNG đúng 1
- * đường cho cả lúc online lẫn offline, thay vì tách riêng "thử ngay 1 lần, báo qua toast RIÊNG nếu
- * lỗi" (online) với "xếp hàng, tự làm khi có mạng" (offline) như trước. Lý do đổi: toast riêng cho
- * lúc online rất dễ bị bỏ lỡ (chỉ hiện ~2 giây, mất luôn dấu vết), trong khi hàng đợi chung đã có sẵn
- * NGUYÊN 1 bộ máy đáng tin cậy người dùng đang trực tiếp theo dõi — dải banner (hiện số việc đang
- * chờ, tự ẩn khi xong), báo lỗi rõ sau vài lần thử vẫn không xong, và toast "đã đồng bộ xong" khi
- * hàng đợi về 0. Không await ở đây — chạy NỀN, khỏi chặn thao tác vừa làm. */
+/** Xếp 1 việc mirror vào hàng đợi RỒI kích hoạt đồng bộ NGAY — dùng CHUNG đúng 1 đường cho cả lúc
+ * online lẫn offline, thay vì tách riêng "thử ngay 1 lần, báo qua toast RIÊNG nếu lỗi" (online) với
+ * "xếp hàng, tự làm khi có mạng" (offline) như trước. Lý do đổi: toast riêng cho lúc online rất dễ bị
+ * bỏ lỡ (chỉ hiện ~2 giây, mất luôn dấu vết), trong khi hàng đợi chung đã có sẵn NGUYÊN 1 bộ máy đáng
+ * tin cậy người dùng đang trực tiếp theo dõi. LUÔN gọi syncOutbox() ngay (không xét isOnline() —
+ * không đáng tin cậy 100%, xem chú thích ở syncOutbox()) — nếu thật sự đang mất mạng thì bản thân lần
+ * gọi mạng thật bên trong đó tự thất bại rồi giữ nguyên hàng đợi như thường, không tốn kém gì thêm.
+ * Không await ở đây — chạy NỀN, khỏi chặn thao tác vừa làm. */
 function queueAndKickMirror(job) {
   queueMirrorJob(job);
-  if (isOnline()) syncOutbox();
+  syncOutbox();
 }
 function applyMatch(query, match) {
   if (!match) return query;
@@ -138,9 +136,11 @@ function applyMatch(query, match) {
 /** Thử ghi thẳng lên Supabase (insert/update/delete). Mất mạng (hoặc lỗi rõ do mạng) -> tự xếp vào
  * outbox để gửi lại sau, coi như đã "lưu tạm" xong (KHÔNG throw) — nơi gọi vẫn cập nhật bộ nhớ/
  * localStorage của mình bình thường, chỉ là chưa lên tới Supabase. Lỗi THẬT thì trả lỗi để nơi gọi
- * tự throw như trước (không nên giấu lỗi thật vào hàng đợi, người dùng cần biết ngay). */
+ * tự throw như trước (không nên giấu lỗi thật vào hàng đợi, người dùng cần biết ngay). LUÔN thử gọi
+ * mạng thật trước tiên — KHÔNG còn tự đoán qua isOnline() rồi bỏ qua bước thử (không đáng tin cậy
+ * 100%, xem chú thích ở syncOutbox()); rõ ràng mất mạng thì bước thử này tự thất bại rất nhanh, không
+ * đáng để đánh đổi lấy rủi ro đoán sai (queue oan 1 việc lẽ ra gửi được ngay lúc đang có mạng thật). */
 async function tryWrite(sb, table, method, payload, match) {
-  if (!isOnline()) { queueWrite(table, method, payload, match); return { queued: true, error: null }; }
   try {
     let q = sb.from(table);
     if (method === 'insert') q = q.insert(payload);
@@ -285,15 +285,16 @@ export async function refresh() {
       return;
     }
     await syncOutbox();
-    if (state.outbox.length) {
-      // Vẫn còn thay đổi CHƯA đồng bộ được lên Supabase (đang mất mạng, hoặc lỗi khác) -> KHÔNG được
-      // tải lại toàn bộ dữ liệu từ server lúc này, vì loadSessionData() thay THẲNG mảng transactions/
-      // debtEntries/... bằng dữ liệu server, sẽ xóa mất đúng những thay đổi cục bộ chưa kịp gửi lên.
-      persist();
-      notify();
-      return;
-    }
-    try { await loadSessionData(state.session.sbToken, { strict: true }); }
+    // Vẫn còn thay đổi CHƯA đồng bộ được lên Supabase (đang mất mạng, hoặc lỗi khác) -> KHÔNG được tải
+    // đè lên ĐÚNG NHỮNG BẢNG đang có thay đổi cục bộ chưa gửi lên đó, vì loadSessionData() thay THẲNG
+    // mảng bằng dữ liệu server. TRƯỚC ĐÂY hễ outbox còn BẤT KỲ gì (dù chỉ 1 dòng, ở 1 bảng bất kỳ) là
+    // BỎ QUA HẲN việc tải lại — kể cả những bảng HOÀN TOÀN KHÔNG LIÊN QUAN (VD "Người khác nợ tôi" —
+    // debtors/receivable_entries — chưa bao giờ được ghi qua outbox này cả, luôn ghi qua Edge Function
+    // ở nơi khác) — khiến dữ liệu người khác ghi hộ (mirror) không bao giờ tự cập nhật được qua trang
+    // Công nợ nữa, CHỈ thấy khi đăng nhập lại từ đầu (login() không đi qua đường này). Giờ chỉ bỏ qua
+    // ĐÚNG các bảng đang có việc chờ, mọi bảng khác vẫn tải mới bình thường.
+    const pendingTables = new Set(state.outbox.map((op) => op.table));
+    try { await loadSessionData(state.session.sbToken, { strict: true, skipTables: pendingTables }); }
     catch (e) { console.warn('Không tải lại được dữ liệu phiên cũ.', e); }
   }
   persist();
@@ -376,8 +377,14 @@ export async function login(identifier, password) {
  * cũng phải dừng hẳn, không ghi đè gì, xem giải thích PHÒNG VỆ bên dưới); FALSE (mặc định) khi gọi từ
  * login() (bộ nhớ đang RỖNG, không có gì để "ghi đè mất" — lỗi 1 bảng PHỤ (VD 1 mục "Bổ sung sau"
  * trong docs chưa setup đủ SQL/RLS trên project này) không nên chặn hẳn cả việc đăng nhập, chỉ cần
- * coi đúng bảng đó là rỗng và cảnh báo, các bảng khác vẫn tải bình thường). */
-async function loadSessionData(token, { strict = false } = {}) {
+ * coi đúng bảng đó là rỗng và cảnh báo, các bảng khác vẫn tải bình thường).
+ * `skipTables`: Set tên bảng ĐANG có thay đổi cục bộ chưa gửi lên (xem outbox trong refresh()) — CHỈ
+ * đúng những bảng này mới giữ nguyên dữ liệu cục bộ, KHÔNG ghi đè bằng dữ liệu server (tránh mất thay
+ * đổi chưa gửi lên); mọi bảng KHÁC (VD debtors/receivable_entries của "Người khác nợ tôi" — chưa bao
+ * giờ ghi qua outbox này, luôn ghi qua Edge Function ở nơi khác) vẫn tải mới bình thường dù outbox
+ * đang có gì đi nữa — đây là điểm khác biệt với bản trước (bỏ qua HẲN mọi bảng chỉ vì 1 bảng bất kỳ
+ * có việc chờ). */
+async function loadSessionData(token, { strict = false, skipTables = new Set() } = {}) {
   const sb = getSupabaseClient(token);
   const [
     userRes, catRes, txnRes, budgetRes, recRes, goalRes, planRes, creditorRes, debtEntryRes, debtorRes, receivableRes, notiRes, readRes,
@@ -419,15 +426,18 @@ async function loadSessionData(token, { strict = false } = {}) {
     // khác hẳn categories trống THẬT của 1 project mới toanh).
     console.warn(msg, firstErrorResult.error);
   }
+  // user_profiles không có tên bảng trùng với outbox (outbox chỉ ghi 'transactions'/'creditors'/
+  // 'debt_entries', xem tryWrite() ở khắp state.js) nên luôn an toàn tải mới — liệt kê tường minh ở
+  // đây để rõ ràng bảng nào ứng với `skipTables` nào, tránh gõ nhầm tên bảng.
+  if (!skipTables.has('transactions')) state.transactions = (txnRes.data || []).map(mapTransactionRow);
+  if (!skipTables.has('creditors')) state.creditors = (creditorRes.data || []).map(mapCreditorRow);
+  if (!skipTables.has('debt_entries')) state.debtEntries = (debtEntryRes.data || []).map(mapDebtEntryRow);
   state.users = (userRes.data || []).map(mapUserProfileRow);
   state.categories = (catRes.data || []).map(mapCategoryRow);
-  state.transactions = (txnRes.data || []).map(mapTransactionRow);
   state.budgets = (budgetRes.data || []).map(mapBudgetRow);
   state.recurring = (recRes.data || []).map(mapRecurringRow);
   state.savingsGoals = (goalRes.data || []).map(mapSavingsGoalRow);
   state.plans = (planRes.data || []).map(mapPlanRow);
-  state.creditors = (creditorRes.data || []).map(mapCreditorRow);
-  state.debtEntries = (debtEntryRes.data || []).map(mapDebtEntryRow);
   state.debtors = (debtorRes.data || []).map(mapDebtorRow);
   state.receivableEntries = (receivableRes.data || []).map(mapReceivableEntryRow);
   state.notifications = (notiRes.data || []).map(mapNotificationRow);
