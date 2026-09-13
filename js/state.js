@@ -1262,6 +1262,7 @@ async function processPendingMirrors() {
   // Không còn chặn theo isOnline() — xem giải thích ở syncOutbox() (chỗ gọi hàm này).
   if (!Array.isArray(state.pendingMirrors) || !state.pendingMirrors.length) return;
   const session = getSession();
+  let anySucceeded = false;
   while (state.pendingMirrors.length) {
     const job = state.pendingMirrors[0];
     let result;
@@ -1285,7 +1286,7 @@ async function processPendingMirrors() {
       console.warn('processPendingMirrors: lỗi không mong đợi:', e);
       result = { status: 'error' };
     }
-    if (result.status === 'ok') { state.pendingMirrors.shift(); persist(); continue; }
+    if (result.status === 'ok') { state.pendingMirrors.shift(); persist(); anySucceeded = true; continue; }
     // TÍNH số lần thử cho CẢ 'network' lẫn 'error' — 1 lỗi mạng "giả" (VD CORS bị chặn cấu hình sai,
     // trình duyệt báo y hệt lỗi mất mạng thật, KHÔNG cách nào phân biệt được) mà cứ mãi coi là "chờ có
     // mạng" thì sẽ lặp vô hạn không bao giờ tự hết — đủ số lần thử (dù trạng thái nào) mới thật sự bỏ
@@ -1303,6 +1304,33 @@ async function processPendingMirrors() {
     }
     persist(); // lưu lại số lần thử (job.attempts) dù chưa bỏ job này khỏi hàng đợi
     break; // giữ job này ở ĐẦU hàng đợi, dừng lại thử tiếp lần sau (network, hoặc error chưa hết lượt)
+  }
+  // ÍT NHẤT 1 job mirror vừa xong — chỉ CẬP NHẬT đúng con trỏ ở bảng NGUỒN (creditors/debt_entries,
+  // bên trên), CHƯA từng cập nhật gì ở bảng ĐÍCH (debtors/receivable_entries — đúng dữ liệu hiện lên
+  // ở "Người khác nợ tôi") vì bước điền hộ ghi thẳng lên server qua Edge Function, không đi qua state
+  // ở đây. Trước đây vì vậy KHÔNG BAO GIỜ tự thấy ngay được, phải chờ 1 lần loadSessionData() đầy đủ
+  // khác (VD đăng nhập lại) mới vô tình thấy — giờ tải lại riêng đúng 2 bảng đích này ngay khi có job
+  // vừa thành công, để "Người khác nợ tôi" tự cập nhật NGAY, không cần thoát ra vào lại. An toàn gọi
+  // dù người vừa mirror hộ và người đang xem "Người khác nợ tôi" là 2 tài khoản khác nhau — RLS chỉ
+  // trả về đúng dữ liệu CỦA CHÍNH phiên đang đăng nhập, không lộ gì thêm.
+  if (anySucceeded) await refreshReceivablesQuietly(session?.sbToken);
+}
+/** Tải lại riêng debtors/receivable_entries ("Người khác nợ tôi") — xem processPendingMirrors(). Lỗi
+ * gì cũng chỉ console.warn, không throw — chỉ là tiện ích cập nhật nhanh, có lỡ trễ thì lần
+ * loadSessionData() đầy đủ kế tiếp (refresh()/đăng nhập lại) vẫn tự bù đúng dữ liệu như thường. */
+async function refreshReceivablesQuietly(sbToken) {
+  try {
+    const sb = getSupabaseClient(sbToken);
+    const [debtorRes, receivableRes] = await Promise.all([
+      sb.from('debtors').select('*'),
+      sb.from('receivable_entries').select('*').order('entry_date', { ascending: false }),
+    ]);
+    if (!debtorRes.error) state.debtors = (debtorRes.data || []).map(mapDebtorRow);
+    if (!receivableRes.error) state.receivableEntries = (receivableRes.data || []).map(mapReceivableEntryRow);
+    persist();
+    notify();
+  } catch (e) {
+    console.warn('refreshReceivablesQuietly: lỗi, sẽ tự bù ở lần refresh() kế tiếp:', e);
   }
 }
 /** Ghi nợ mới. Truyền creditorId khi đã biết đúng chủ nợ (VD đang ở trang chi tiết 1 chủ nợ) — dùng

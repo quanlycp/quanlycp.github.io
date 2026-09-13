@@ -140,23 +140,24 @@ window.addEventListener('online', trySyncNow);
 window.addEventListener('offline', () => { if (root) updateSyncBanner(S.pendingSyncCount(), S.getSyncIssue()); });
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') trySyncNow(); });
 window.addEventListener('focus', trySyncNow);
-// LỖI THẬT đã tìm ra: trước đây hẹn giờ dưới đây CHỈ làm gì đó (gọi trySyncNow, cũng là nơi DUY NHẤT
-// gọi updateSyncBanner ở khối này) khi ĐANG CÓ việc chờ đồng bộ — nếu không còn gì chờ (VD chỉ đơn
-// giản bật/tắt mạng, không thao tác gì) mà đúng lúc đó sự kiện 'online'/'offline'/visibilitychange/
-// focus của trình duyệt KHÔNG bắn ra (biết là không đáng tin cậy 100%, xem chú thích ở trên) thì
-// KHÔNG CÓ GÌ cập nhật lại dải banner nữa — dải "Đang mất mạng" cứ đứng yên MÃI MÃI dù thật ra đã có
-// mạng lại từ lâu. Giờ tách riêng: LUÔN cập nhật lại banner mỗi 5 giây (rẻ, chỉ đọc navigator.onLine +
-// vẽ lại DOM, không gọi mạng) bất kể có gì để đồng bộ hay không; CHỈ gọi trySyncNow() (có gọi mạng)
-// khi thật sự đang có việc chờ.
+// Hẹn giờ dưới đây có 2 việc TÁCH RIÊNG nhau:
+// 1. Cập nhật lại banner mỗi 5 giây (rẻ, chỉ đọc navigator.onLine + vẽ lại DOM, không gọi mạng) — LUÔN
+//    làm, bất kể có gì để đồng bộ hay không, để không rơi vào lỗi cũ đã sửa: dải "Đang mất mạng" đứng
+//    yên mãi vì không có gì khiến nó tự vẽ lại.
+// 2. THỬ GỌI MẠNG (trySyncNow) — CÓ xét navigator.onLine trước ở đây, vì gọi mỗi 5 giây dù RÕ RÀNG
+//    đang mất mạng (cờ báo false) là vô ích/gây cảm giác "lúc nào cũng đồng bộ" dù biết chắc không có
+//    mạng. Không lo bị kẹt cứng như trước vì CÒN NHIỀU đường KHÁC gọi trySyncNow() KHÔNG xét cờ này:
+//    - 'online': bắn ra ngay lúc mạng thật sự có lại — đường CHÍNH để phát hiện.
+//    - focus/visibilitychange: mở lại app — cũng không xét cờ, thử lại ngay lúc quay lại app.
+//    - hẹn giờ AN TOÀN bên dưới (60 giây, KHÔNG xét cờ) — phòng hờ cả 3 đường trên đều không bắn ra
+//      (cờ bị kẹt báo sai mãi) thì vẫn tự sửa lại được, chỉ là chậm hơn (tối đa 1 phút) thay vì mỗi
+//      5 giây — cân bằng giữa "không ngu ngốc cứ thử hoài lúc rõ ràng mất mạng" và "không bao giờ bị
+//      kẹt cứng nếu cờ báo sai".
 setInterval(() => {
   if (root) updateSyncBanner(S.pendingSyncCount(), S.getSyncIssue());
-  // Không còn xét navigator.onLine trước khi thử ở đây nữa — cờ này không phải lúc nào cũng đáng tin
-  // cậy (khác nhau tùy trình duyệt/cách mô phỏng mất mạng lúc test); lỡ nó báo sai "vẫn offline" dù
-  // mạng đã có lại thật thì hẹn giờ này không bao giờ thử lại được nữa. syncOutbox() giờ tự quyết định
-  // qua chính kết quả gọi mạng thật (xem state.js), cứ gọi thử — không mạng thật thì tự thất bại rồi
-  // giữ nguyên hàng đợi như cũ, không tốn kém gì thêm.
-  if (S.pendingSyncCount() > 0) trySyncNow();
+  if (navigator.onLine !== false && S.pendingSyncCount() > 0) trySyncNow();
 }, 5000);
+setInterval(() => { if (S.pendingSyncCount() > 0) trySyncNow(); }, 60000);
 
 window.addEventListener('DOMContentLoaded', async () => {
   root = document.getElementById('root');

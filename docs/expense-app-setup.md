@@ -737,15 +737,20 @@ máy nào biết máy nào (mỗi máy có "hàng đợi" riêng trong bộ nh�
 **KHÔNG cần chạy SQL hay deploy lại Edge Function cho mục này** — đây là thay đổi thuần phía app
 (trình duyệt), không đụng tới cấu trúc dữ liệu trên Supabase.
 
-Kỹ thuật (tóm tắt, xem thêm chú thích trong `js/state.js`): mỗi thao tác ghi vẫn lưu ngay vào bộ nhớ
-máy (dùng được liền); nếu lúc đó không gửi lên Supabase được (mất mạng/lỗi mạng), việc gửi được xếp
-vào 1 "hàng đợi" (outbox) cũng lưu trong bộ nhớ máy — có mạng lại (bắt sự kiện `online`, có kiểm tra
-định kỳ dự phòng mỗi 20 giây, và mỗi lần `refresh()`), app tự gửi hết hàng đợi theo đúng thứ tự đã
-ghi. Riêng bước "điền hộ" Mượn nợ sang sổ riêng của 1 thành viên (gọi Edge Function, xem mục 13) có
-1 hàng đợi RIÊNG (`pendingMirrors`) — chạy SAU khi hàng đợi chính ở trên đã gửi xong hết (đảm bảo
-chủ nợ/dòng sổ nợ đã thật sự có trên Supabase) — nên bước điền hộ này CŨNG tự làm lại khi có mạng,
-không cần làm tay. `service-worker.js` cũng được sửa để lưu sẵn "vỏ" app (giao diện) vào bộ nhớ đệm
-của trình duyệt, cho phép MỞ được app ngay cả khi mất mạng ngay từ đầu (không chỉ khi tab đang mở
+Kỹ thuật (tóm tắt, xem thêm chú thích trong `js/state.js` và `js/app.js`): mỗi thao tác ghi vẫn lưu
+ngay vào bộ nhớ máy (dùng được liền); nếu lúc đó không gửi lên Supabase được (mất mạng/lỗi mạng),
+việc gửi được xếp vào 1 "hàng đợi" (outbox) cũng lưu trong bộ nhớ máy. App thử gửi lại hàng đợi qua
+nhiều "đường" khác nhau: sự kiện `online` (có mạng lại), `focus`/`visibilitychange` (mở lại app từ
+nền/khóa màn hình — thường là lúc thực sự nhận ra vừa có mạng lại), và 2 hẹn giờ dự phòng — 1 cái mỗi
+5 giây (có xét cờ `navigator.onLine`, bỏ qua nếu cờ báo RÕ RÀNG đang mất mạng, tránh cứ thử hoài vô
+ích) và 1 cái mỗi 60 giây (KHÔNG xét cờ này, phòng hờ cờ báo sai mãi thì vẫn tự sửa lại được, chỉ
+chậm hơn). Riêng bước "điền hộ" Mượn nợ sang sổ riêng của 1 thành viên (gọi Edge Function, xem mục
+13) có 1 hàng đợi RIÊNG (`pendingMirrors`) — chạy SAU khi hàng đợi chính ở trên đã gửi xong hết (đảm
+bảo chủ nợ/dòng sổ nợ đã thật sự có trên Supabase) — nên bước điền hộ này CŨNG tự làm lại khi có
+mạng, không cần làm tay; ngay khi có job điền hộ nào vừa thành công, app tự tải lại riêng 2 bảng
+"Người khác nợ tôi" đọc từ đó (`debtors`/`receivable_entries`) nên mục này tự cập nhật ngay, không
+cần thoát ra vào lại. `service-worker.js` cũng được sửa để lưu sẵn "vỏ" app (giao diện) vào bộ nhớ
+đệm của trình duyệt, cho phép MỞ được app ngay cả khi mất mạng ngay từ đầu (không chỉ khi tab đang mở
 sẵn từ trước) — có mạng vẫn luôn ưu tiên lấy bản mới nhất như trước, không sợ bị kẹt xem bản cũ.
 
 Có 1 dải màu vàng phía trên đầu trang khi đang mất mạng hoặc còn thay đổi chưa đồng bộ (kể cả bước
