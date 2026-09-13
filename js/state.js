@@ -265,7 +265,7 @@ export async function refresh() {
       notify();
       return;
     }
-    try { await loadSessionData(state.session.sbToken); }
+    try { await loadSessionData(state.session.sbToken, { strict: true }); }
     catch (e) { console.warn('Không tải lại được dữ liệu phiên cũ.', e); }
   }
   persist();
@@ -331,20 +331,29 @@ export async function login(identifier, password) {
   const res = await callLoginFunction({ identifier, password });
   if (!res.ok) return { ok: false, reason: res.reason };
   try {
+    // strict mặc định false (xem loadSessionData) — 1 bảng PHỤ lỗi (VD chưa setup đủ SQL/RLS cho 1
+    // tính năng "Bổ sung sau" nào đó) KHÔNG chặn hẳn đăng nhập nữa, chỉ coi bảng đó là rỗng + cảnh
+    // báo console. Nhánh catch này giờ chỉ còn bắt lỗi THẬT SỰ nghiêm trọng (VD mất mạng giữa chừng
+    // ngay lúc vừa đăng nhập xong, hoặc lỗi không mong đợi trong seedDefaultCategories/
+    // ensureSpecialCategories) — kèm nguyên văn lý do để còn biết đường sửa, không chỉ 1 câu chung chung.
     await loadSessionData(res.token);
   } catch (e) {
-    // loadSessionData() có thể ném lỗi ở đúng phòng vệ "dữ liệu trống bất thường" phía trên — về lý
-    // thuyết không nên xảy ra ở bước đăng nhập (bộ nhớ luôn RỖNG trước 1 lần đăng nhập mới, xem
-    // logout()/init()) nhưng vẫn bọc lại cho chắc, tránh lỗi không bắt được làm treo cả màn đăng nhập.
     console.warn('login: lỗi tải dữ liệu phiên, thử đăng nhập lại:', e);
-    return { ok: false, reason: 'Đăng nhập được nhưng chưa tải được dữ liệu, thử lại.' };
+    return { ok: false, reason: `Đăng nhập được nhưng chưa tải được dữ liệu — ${e.message || e}. Thử lại.` };
   }
   return { ok: true, userId: res.id, role: res.role, mustChangePassword: !!res.mustChangePassword, sbToken: res.token };
 }
 
-async function loadSessionData(token) {
+/** `strict`: TRUE khi gọi từ refresh() (1 phiên ĐANG có dữ liệu thật trong bộ nhớ — lỗi 1 bảng bất kỳ
+ * cũng phải dừng hẳn, không ghi đè gì, xem giải thích PHÒNG VỆ bên dưới); FALSE (mặc định) khi gọi từ
+ * login() (bộ nhớ đang RỖNG, không có gì để "ghi đè mất" — lỗi 1 bảng PHỤ (VD 1 mục "Bổ sung sau"
+ * trong docs chưa setup đủ SQL/RLS trên project này) không nên chặn hẳn cả việc đăng nhập, chỉ cần
+ * coi đúng bảng đó là rỗng và cảnh báo, các bảng khác vẫn tải bình thường). */
+async function loadSessionData(token, { strict = false } = {}) {
   const sb = getSupabaseClient(token);
-  const results = await Promise.all([
+  const [
+    userRes, catRes, txnRes, budgetRes, recRes, goalRes, planRes, creditorRes, debtEntryRes, debtorRes, receivableRes, notiRes, readRes,
+  ] = await Promise.all([
     sb.from('user_profiles').select('*'),
     sb.from('categories').select('*').order('sort_order'),
     sb.from('transactions').select('*').order('txn_date', { ascending: false }),
@@ -366,29 +375,36 @@ async function loadSessionData(token) {
   // `error`) rồi `data || []` -> null biến thành RỖNG và ghi đè thẳng vào state, đúng lúc mạng chập
   // chờn (dễ xảy ra nhất ngay khi vừa có mạng lại, hoặc khi đang mất mạng mà refresh() vẫn lỡ gọi tới
   // đây) là y hệt hiện tượng "dữ liệu về 0 như ban đầu" dù dữ liệu thật trên Supabase vẫn còn nguyên.
-  // Giờ kiểm tra `error` TRỰC TIẾP trên từng câu — chỉ CẦN 1 câu lỗi là coi cả lần tải này thất bại,
-  // ném lỗi để refresh()/login() giữ nguyên dữ liệu cũ và tự thử lại sau, không ghi đè gì cả.
-  const firstError = results.find((r) => r.error)?.error;
-  if (firstError) throw new Error(`Tải dữ liệu phiên bị lỗi (${firstError.message || firstError}) — đã bỏ qua, giữ nguyên dữ liệu cũ.`);
-  const [
-    { data: userRows }, { data: catRows }, { data: txnRows }, { data: budgetRows }, { data: recRows }, { data: goalRows },
-    { data: planRows }, { data: creditorRows }, { data: debtEntryRows }, { data: debtorRows }, { data: receivableEntryRows },
-    { data: notiRows }, { data: readRows },
-  ] = results;
-  state.users = (userRows || []).map(mapUserProfileRow);
-  state.categories = (catRows || []).map(mapCategoryRow);
-  state.transactions = (txnRows || []).map(mapTransactionRow);
-  state.budgets = (budgetRows || []).map(mapBudgetRow);
-  state.recurring = (recRows || []).map(mapRecurringRow);
-  state.savingsGoals = (goalRows || []).map(mapSavingsGoalRow);
-  state.plans = (planRows || []).map(mapPlanRow);
-  state.creditors = (creditorRows || []).map(mapCreditorRow);
-  state.debtEntries = (debtEntryRows || []).map(mapDebtEntryRow);
-  state.debtors = (debtorRows || []).map(mapDebtorRow);
-  state.receivableEntries = (receivableEntryRows || []).map(mapReceivableEntryRow);
-  state.notifications = (notiRows || []).map(mapNotificationRow);
-  state.notificationReads = (readRows || []).map((r) => r.notification_id);
-  if (state.categories.length === 0) await seedDefaultCategories(sb);
+  const allResults = [userRes, catRes, txnRes, budgetRes, recRes, goalRes, planRes, creditorRes, debtEntryRes, debtorRes, receivableRes, notiRes, readRes];
+  const firstErrorResult = allResults.find((r) => r.error);
+  if (firstErrorResult) {
+    const msg = `Lỗi tải 1 bảng dữ liệu: ${firstErrorResult.error.message || firstErrorResult.error}`;
+    if (strict) {
+      // Đang refresh() 1 phiên CÓ SẴN dữ liệu thật -> không ghi đè gì cả, ném lỗi để refresh() giữ
+      // nguyên dữ liệu cũ và tự thử lại sau (xem catch ở refresh()).
+      throw new Error(`${msg} — đã bỏ qua, giữ nguyên dữ liệu cũ.`);
+    }
+    // Đăng nhập LẦN ĐẦU (bộ nhớ đang rỗng, không có gì để mất) -> đừng chặn hẳn đăng nhập chỉ vì 1
+    // bảng PHỤ lỗi — coi đúng bảng đó là rỗng (đã có sẵn `|| []` bên dưới), các bảng khác vẫn tải
+    // bình thường. Riêng categories thì canh KHÔNG tự tạo trùng bộ mặc định nếu chính bảng này lỗi
+    // (xem check `!catRes.error` ở seedDefaultCategories bên dưới — categories trống OAN do lỗi tải
+    // khác hẳn categories trống THẬT của 1 project mới toanh).
+    console.warn(msg, firstErrorResult.error);
+  }
+  state.users = (userRes.data || []).map(mapUserProfileRow);
+  state.categories = (catRes.data || []).map(mapCategoryRow);
+  state.transactions = (txnRes.data || []).map(mapTransactionRow);
+  state.budgets = (budgetRes.data || []).map(mapBudgetRow);
+  state.recurring = (recRes.data || []).map(mapRecurringRow);
+  state.savingsGoals = (goalRes.data || []).map(mapSavingsGoalRow);
+  state.plans = (planRes.data || []).map(mapPlanRow);
+  state.creditors = (creditorRes.data || []).map(mapCreditorRow);
+  state.debtEntries = (debtEntryRes.data || []).map(mapDebtEntryRow);
+  state.debtors = (debtorRes.data || []).map(mapDebtorRow);
+  state.receivableEntries = (receivableRes.data || []).map(mapReceivableEntryRow);
+  state.notifications = (notiRes.data || []).map(mapNotificationRow);
+  state.notificationReads = (readRes.data || []).map((r) => r.notification_id);
+  if (state.categories.length === 0 && !catRes.error) await seedDefaultCategories(sb);
   await ensureSpecialCategories(sb);
 }
 
