@@ -140,6 +140,15 @@ async function tryWrite(sb, table, method, payload, match) {
  * có thay đổi CHƯA lên tới Supabase, tránh tưởng nhầm là mất dữ liệu hoặc app bị lỗi. */
 export function pendingSyncCount() { return state.outbox.length + (state.pendingMirrors ? state.pendingMirrors.length : 0); }
 
+// Lỗi THẬT (không phải do mất mạng) gặp phải lúc đồng bộ hàng đợi — trước đây gặp lỗi này chỉ
+// console.warn() rồi ÂM THẦM giữ nguyên item đó ở ĐẦU hàng đợi mãi mãi (thử lại y hệt input cũ ở mỗi
+// lần sync sau, luôn lỗi y hệt) -> CHẶN LUÔN mọi thay đổi ghi SAU nó (kể cả của người khác/thao tác
+// khác) không bao giờ lên được, mà người dùng không hề biết vì không có gì báo cả — nhìn như "app bị
+// treo lúc đồng bộ" hoặc "sao mãi không thấy lên". Giờ lưu lại để hiện rõ lên banner (components/
+// shell.js) thay vì im lặng mãi. KHÔNG lưu vào localStorage (chỉ để hiện tạm thời trong phiên hiện tại).
+let lastSyncIssue = null;
+export function getSyncIssue() { return lastSyncIssue; }
+
 let syncingOutbox = false;
 /** Gửi hết hàng đợi lên Supabase theo ĐÚNG THỨ TỰ đã ghi, xong mới xử lý tiếp hàng đợi mirror (xem
  * processPendingMirrors — CHỈ chạy khi outbox chính đã trống hẳn, vì bước mirror cần creditor/dòng sổ
@@ -149,6 +158,7 @@ let syncingOutbox = false;
 export async function syncOutbox() {
   if (syncingOutbox || !isOnline() || (!state.outbox.length && !(state.pendingMirrors || []).length)) return;
   syncingOutbox = true;
+  lastSyncIssue = null; // để mỗi lần thử lại đều đánh giá lại từ đầu, không giữ mãi thông báo lỗi cũ nếu đã hết lỗi
   try {
     const session = getSession();
     const sb = getSupabaseClient(session?.sbToken);
@@ -161,7 +171,14 @@ export async function syncOutbox() {
       let error = null;
       try { ({ error } = await q); } catch (e) { error = e; }
       if (error) {
-        console.warn('syncOutbox: lỗi đồng bộ, giữ lại thử lần sau:', error.message || error);
+        if (!isNetworkError(error)) {
+          // Lỗi THẬT (VD RLS từ chối, thiếu cột, sai kiểu dữ liệu...) — KHÔNG phải cứ retry là tự hết,
+          // giữ lại đây để người dùng/chủ sổ thấy ngay mà báo, thay vì tưởng "đang đồng bộ" mãi.
+          console.warn(`syncOutbox: lỗi THẬT (không phải mất mạng) trên bảng ${op.table}, dừng hàng đợi lại:`, error.message || error);
+          lastSyncIssue = { message: `Lỗi đồng bộ (bảng ${op.table}): ${error.message || error}` };
+        } else {
+          console.warn('syncOutbox: lỗi mạng, giữ lại thử lần sau:', error.message || error);
+        }
         break;
       }
       state.outbox.shift();
@@ -283,7 +300,15 @@ export async function updateSettings(patch) {
 export async function login(identifier, password) {
   const res = await callLoginFunction({ identifier, password });
   if (!res.ok) return { ok: false, reason: res.reason };
-  await loadSessionData(res.token);
+  try {
+    await loadSessionData(res.token);
+  } catch (e) {
+    // loadSessionData() có thể ném lỗi ở đúng phòng vệ "dữ liệu trống bất thường" phía trên — về lý
+    // thuyết không nên xảy ra ở bước đăng nhập (bộ nhớ luôn RỖNG trước 1 lần đăng nhập mới, xem
+    // logout()/init()) nhưng vẫn bọc lại cho chắc, tránh lỗi không bắt được làm treo cả màn đăng nhập.
+    console.warn('login: lỗi tải dữ liệu phiên, thử đăng nhập lại:', e);
+    return { ok: false, reason: 'Đăng nhập được nhưng chưa tải được dữ liệu, thử lại.' };
+  }
   return { ok: true, userId: res.id, role: res.role, mustChangePassword: !!res.mustChangePassword, sbToken: res.token };
 }
 
@@ -308,6 +333,20 @@ async function loadSessionData(token) {
     sb.from('notifications').select('*'),
     sb.from('notification_reads').select('notification_id'),
   ]);
+  // PHÒNG VỆ chống "dữ liệu về 0": Supabase/RLS không NÉM LỖI khi 1 JWT không hợp lệ/khớp — nó chỉ
+  // âm thầm lọc MỌI bảng về RỖNG (0 dòng, coi như truy vấn "thành công"), Promise.all() ở trên vì vậy
+  // KHÔNG throw để lọt vào catch của nơi gọi (refresh()/login()) — mọi dòng gán bên dưới cứ thế chạy
+  // và ghi đè state hiện tại bằng toàn mảng RỖNG. Việc này rất dễ xảy ra đúng lúc mạng vừa chập chờn
+  // (VD vừa mất mạng xong bật lại, có mạng lại nhưng phiên/token chưa kịp ổn định) — trông y hệt "mất
+  // hết dữ liệu" dù dữ liệu thật trên Supabase vẫn còn nguyên. Nếu MỌI bảng cốt lõi cùng lúc đều rỗng
+  // trong khi bộ nhớ hiện tại ĐANG có dữ liệu thật (không phải lần đăng nhập đầu/tài khoản mới, lúc đó
+  // rỗng là đúng) -> coi lần tải này là THẤT BẠI, ném lỗi để refresh() giữ nguyên dữ liệu cũ và tự thử
+  // lại sau, còn hơn ghi đè về "0" oan.
+  const looksSuspiciouslyEmpty = !userRows?.length && !catRows?.length && !txnRows?.length && !creditorRows?.length && !debtEntryRows?.length;
+  const hadRealData = state.categories.length > 0 || state.transactions.length > 0;
+  if (looksSuspiciouslyEmpty && hadRealData) {
+    throw new Error('Kết quả tải dữ liệu trống bất thường (nghi mạng/phiên chập chờn) — đã bỏ qua, giữ nguyên dữ liệu cũ.');
+  }
   state.users = (userRows || []).map(mapUserProfileRow);
   state.categories = (catRows || []).map(mapCategoryRow);
   state.transactions = (txnRows || []).map(mapTransactionRow);
@@ -1096,10 +1135,17 @@ async function performMirrorDelete(mirrorEntryId, sbToken) {
   if (!res.ok) { if (!res.networkError) console.warn('performMirrorDelete không thành công:', res.reason); return { status: res.networkError ? 'network' : 'error' }; }
   return { status: 'ok' };
 }
+// Vừa mất mạng lại (Edge Function có thể đang "nguội" — cold start — hoặc mạng vẫn còn chập chờn vài
+// giây đầu) rất dễ gặp lỗi KHÔNG được nhận diện là "lỗi mạng" (VD phản hồi lỗi 5xx/timeout thật sự từ
+// server, không phải fetch() ném exception) dù chỉ là THOÁNG QUA — trước đây hễ không phải lỗi mạng
+// rõ ràng là coi luôn là lỗi THẬT vĩnh viễn rồi ÂM THẦM bỏ job, khiến "Người khác nợ tôi" của thành
+// viên KHÔNG BAO GIỜ nhận được dòng mirror mà không ai biết. Giờ cho thử lại tối đa
+// MIRROR_JOB_MAX_ATTEMPTS lần (mỗi lần syncOutbox() được gọi mới tính là 1 lần) trước khi thật sự bỏ
+// cuộc — lúc đó mới báo rõ qua lastSyncIssue, không im lặng nữa.
+const MIRROR_JOB_MAX_ATTEMPTS = 5;
 /** Làm hết hàng đợi mirror còn dang dở (state.pendingMirrors) — gọi từ syncOutbox() SAU khi outbox
  * chính đã trống hẳn (creditor/dòng sổ nợ chắc chắn đã có thật trên Supabase để lưu con trỏ mirror_*
- * ngược lại). Gặp lỗi MẠNG thì dừng lại NGAY, giữ nguyên hàng đợi để thử lại lần sau; lỗi THẬT thì bỏ
- * qua job đó (best-effort, xem performMirrorAdd) rồi làm tiếp job kế tiếp, không chặn cả hàng đợi. */
+ * ngược lại). Gặp lỗi MẠNG thì dừng lại NGAY, giữ nguyên hàng đợi để thử lại lần sau. */
 async function processPendingMirrors() {
   if (!Array.isArray(state.pendingMirrors) || !state.pendingMirrors.length || !isOnline()) return;
   const session = getSession();
@@ -1111,8 +1157,10 @@ async function processPendingMirrors() {
         const creditor = getCreditor(job.creditorId);
         const entry = state.debtEntries.find((x) => x.id === job.entryId);
         // Dòng gốc đã bị xóa trong lúc job này còn chờ trong hàng đợi (deleteDebtEntry đã tự hủy job
-        // 'add' tương ứng — nhánh này chỉ để phòng hờ) -> không còn gì để mirror, bỏ qua.
-        result = (!creditor || !entry) ? { status: 'error' } : await performMirrorAdd(creditor, entry, { debtKind: job.debtKind, amount: job.amount, date: job.date, sbToken: session?.sbToken });
+        // 'add' tương ứng — nhánh này chỉ để phòng hờ) -> không còn gì để mirror, bỏ qua hẳn (không
+        // phải lỗi cần báo, dòng gốc không còn tồn tại nữa).
+        if (!creditor || !entry) { state.pendingMirrors.shift(); persist(); continue; }
+        result = await performMirrorAdd(creditor, entry, { debtKind: job.debtKind, amount: job.amount, date: job.date, sbToken: session?.sbToken });
       } else if (job.op === 'update') {
         result = await performMirrorUpdate(job.mirrorEntryId, { amount: job.amount, date: job.date, debtKind: job.debtKind, sbToken: session?.sbToken });
       } else if (job.op === 'delete') {
@@ -1121,12 +1169,22 @@ async function processPendingMirrors() {
         result = { status: 'error' };
       }
     } catch (e) {
-      console.warn('processPendingMirrors: lỗi không mong đợi, bỏ qua job này:', e);
+      console.warn('processPendingMirrors: lỗi không mong đợi:', e);
       result = { status: 'error' };
     }
-    if (result.status === 'network') break; // giữ nguyên hàng đợi, thử lại lần sau
-    state.pendingMirrors.shift();
-    persist();
+    if (result.status === 'ok') { state.pendingMirrors.shift(); persist(); continue; }
+    // 'network' HOẶC 'error' đều thử lại — chỉ khác ở chỗ 'error' còn TÍNH số lần đã thử, hết lượt
+    // mới thật sự bỏ cuộc (xem giải thích ở trên MIRROR_JOB_MAX_ATTEMPTS).
+    job.attempts = (job.attempts || 0) + (result.status === 'error' ? 1 : 0);
+    if (result.status === 'error' && job.attempts >= MIRROR_JOB_MAX_ATTEMPTS) {
+      console.warn(`processPendingMirrors: bỏ qua job "${job.op}" sau ${job.attempts} lần thử vẫn lỗi.`);
+      lastSyncIssue = { message: `Không tự điền được sang sổ riêng thành viên (đã thử ${job.attempts} lần) — cần vào tay ghi lại khoản đó cho đúng.` };
+      state.pendingMirrors.shift();
+      persist();
+      continue;
+    }
+    persist(); // lưu lại số lần thử (job.attempts) dù chưa bỏ job này khỏi hàng đợi
+    break; // giữ job này ở ĐẦU hàng đợi, dừng lại thử tiếp lần sau (network, hoặc error chưa hết lượt)
   }
 }
 /** Ghi nợ mới. Truyền creditorId khi đã biết đúng chủ nợ (VD đang ở trang chi tiết 1 chủ nợ) — dùng

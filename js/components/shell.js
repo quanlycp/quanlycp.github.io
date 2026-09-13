@@ -59,14 +59,19 @@ export function buildShell(root, isOwner) {
 }
 
 /** Báo đang mất mạng và/hoặc còn thay đổi CHƯA đồng bộ lên Supabase (xem outbox trong state.js) —
- * gọi lại mỗi lần vẽ trang (app.js) để luôn đúng thực tế hiện tại, khỏi phải tự đoán. */
-export function updateSyncBanner(pendingCount) {
+ * gọi lại mỗi lần vẽ trang (app.js) để luôn đúng thực tế hiện tại, khỏi phải tự đoán. `syncIssue`
+ * (xem S.getSyncIssue()) là 1 lỗi THẬT gặp phải lúc đồng bộ (không phải chỉ đang chờ mạng) — ưu tiên
+ * hiện lỗi này lên trước, kèm màu đỏ, để không còn "im lặng" như trước (xem state.js). */
+export function updateSyncBanner(pendingCount, syncIssue) {
   const el = document.getElementById('sync-banner');
   if (!el) return;
   const offline = typeof navigator !== 'undefined' && navigator.onLine === false;
-  if (!offline && !pendingCount) { el.hidden = true; return; }
+  if (!offline && !pendingCount && !syncIssue) { el.hidden = true; return; }
   el.hidden = false;
-  if (offline) {
+  el.classList.toggle('sync-banner-error', !!syncIssue);
+  if (syncIssue) {
+    el.textContent = syncIssue.message;
+  } else if (offline) {
     el.textContent = pendingCount
       ? `Đang mất mạng — ${pendingCount} thay đổi sẽ tự đồng bộ khi có mạng lại.`
       : 'Đang mất mạng — vẫn xem/ghi dữ liệu bình thường, sẽ tự đồng bộ khi có mạng lại.';
