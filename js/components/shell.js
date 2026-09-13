@@ -1,5 +1,6 @@
 import { icon } from '../icons.js';
 import { openModal } from './modal.js';
+import { BUILD_VERSION } from '../buildInfo.js';
 
 // Thứ tự ở đây quyết định luôn 4 mục đầu hiện TRỰC TIẾP trên thanh menu dưới
 // di động (BOTTOM_NAV_MAX_DIRECT bên dưới) — mục nào muốn dễ thấy, xếp
@@ -43,6 +44,7 @@ export function buildShell(root, isOwner) {
         <nav class="sidebar-nav" id="sidebar-nav"></nav>
         <a href="#/doi-mat-khau" class="btn btn-outline btn-block" style="margin-top:16px">${icon('lock', 'icon-sm')} Đổi mật khẩu</a>
         <button class="btn btn-outline btn-block" id="btn-logout-side" style="margin-top:8px">${icon('logout', 'icon-sm')} Đăng xuất</button>
+        <p style="text-align:center;font-size:10.5px;color:var(--text-faint);margin:14px 0 0">Bản: ${BUILD_VERSION}</p>
       </aside>
       <div class="main-col">
         <div class="sync-banner" id="sync-banner" hidden></div>
@@ -110,6 +112,7 @@ function openMoreSheet(overflowItems) {
             <div class="row-main"><div class="row-title">${item.label}</div></div>
           </a>`).join('')}
       </div>
+      <p style="text-align:center;font-size:11px;color:var(--text-faint);margin:14px 0 0">Bản: ${BUILD_VERSION}</p>
     `,
     footHtml: `<button class="btn btn-outline btn-block" id="sheet-logout">${icon('logout', 'icon-sm')} Đăng xuất</button>`,
     onMount(sheet, closeFn) {
