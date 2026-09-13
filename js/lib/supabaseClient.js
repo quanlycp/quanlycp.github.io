@@ -44,7 +44,10 @@ export function getSupabaseClient(jwt) {
   return cachedClient;
 }
 
-/** Gọi thẳng Edge Function — dùng chung cho mọi "type", tự bọc lỗi mạng. */
+/** Gọi thẳng Edge Function — dùng chung cho mọi "type", tự bọc lỗi mạng. `networkError: true` khi lỗi
+ * rõ do MẤT MẠNG (không gọi được tới server) — để nơi gọi (VD hàng đợi đồng bộ mirror khi mất mạng
+ * trong state.js) phân biệt được với lỗi THẬT (server trả lời nhưng từ chối) mà tự xếp hàng thử lại
+ * sau thay vì coi là thất bại hẳn. */
 async function callApi(authToken, payload) {
   try {
     const res = await fetch(API_FN_URL, {
@@ -54,7 +57,7 @@ async function callApi(authToken, payload) {
     });
     return await res.json();
   } catch (e) {
-    return { ok: false, reason: 'Không kết nối được máy chủ, kiểm tra lại mạng và thử lại.' };
+    return { ok: false, networkError: true, reason: 'Không kết nối được máy chủ, kiểm tra lại mạng và thử lại.' };
   }
 }
 

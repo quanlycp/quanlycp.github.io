@@ -739,22 +739,19 @@ Kỹ thuật (tóm tắt, xem thêm chú thích trong `js/state.js`): mỗi thao
 máy (dùng được liền); nếu lúc đó không gửi lên Supabase được (mất mạng/lỗi mạng), việc gửi được xếp
 vào 1 "hàng đợi" (outbox) cũng lưu trong bộ nhớ máy — có mạng lại (bắt sự kiện `online`, có kiểm tra
 định kỳ dự phòng mỗi 20 giây, và mỗi lần `refresh()`), app tự gửi hết hàng đợi theo đúng thứ tự đã
-ghi. `service-worker.js` cũng được sửa để lưu sẵn "vỏ" app (giao diện) vào bộ nhớ đệm của trình
-duyệt, cho phép MỞ được app ngay cả khi mất mạng ngay từ đầu (không chỉ khi tab đang mở sẵn từ
-trước) — có mạng vẫn luôn ưu tiên lấy bản mới nhất như trước, không sợ bị kẹt xem bản cũ.
+ghi. Riêng bước "điền hộ" Mượn nợ sang sổ riêng của 1 thành viên (gọi Edge Function, xem mục 13) có
+1 hàng đợi RIÊNG (`pendingMirrors`) — chạy SAU khi hàng đợi chính ở trên đã gửi xong hết (đảm bảo
+chủ nợ/dòng sổ nợ đã thật sự có trên Supabase) — nên bước điền hộ này CŨNG tự làm lại khi có mạng,
+không cần làm tay. `service-worker.js` cũng được sửa để lưu sẵn "vỏ" app (giao diện) vào bộ nhớ đệm
+của trình duyệt, cho phép MỞ được app ngay cả khi mất mạng ngay từ đầu (không chỉ khi tab đang mở
+sẵn từ trước) — có mạng vẫn luôn ưu tiên lấy bản mới nhất như trước, không sợ bị kẹt xem bản cũ.
 
-Có 1 dải màu vàng phía trên đầu trang khi đang mất mạng hoặc còn thay đổi chưa đồng bộ, để biết ngay
-là dữ liệu chưa lên tới máy chủ, tránh tưởng nhầm là mất dữ liệu.
+Có 1 dải màu vàng phía trên đầu trang khi đang mất mạng hoặc còn thay đổi chưa đồng bộ (kể cả bước
+điền hộ), để biết ngay là dữ liệu chưa lên tới máy chủ/chưa điền hộ xong, tránh tưởng nhầm là mất dữ liệu.
 
 **Phạm vi hiện tại** — các mục khác vẫn cần có mạng như trước (có thể bổ sung sau nếu cần):
 Danh mục, Ngân sách, Định kỳ, Tiết kiệm, Kế hoạch, Thông báo, Quản lý User, Cài đặt, và phía "Cho
 vay/Tôi nợ" (công nợ phải thu, không liên quan tới thành viên trong sổ).
-
-**Lưu ý riêng 1 điểm**: nếu lúc mất mạng bạn chọn 1 THÀNH VIÊN làm người cho mượn ở mục Mượn nợ (để
-tự điền sang "Người khác nợ tôi" của họ, xem mục 13), bước tự điền hộ này KHÔNG tự chạy lại khi
-đồng bộ — vì đây là gọi Edge Function (cần mạng ngay lúc đó), không phải ghi bảng thường. Giao dịch/
-Nợ chung vẫn lên đúng và ai cũng thấy được sau khi đồng bộ, chỉ riêng phần tự điền hộ vào sổ riêng
-của thành viên đó thì cần làm lại (hoặc nhắc họ tự thêm) sau khi có mạng.
 
 ### 15.1 Việc còn lại cho mục này
 
