@@ -117,7 +117,9 @@ export function openTransactionForm({ transaction, defaultType = 'expense', onSa
           // 1 chút sau khi người dùng đã rời màn — không sao, toast không phụ thuộc form còn mở hay không.
           if (mirrorResult?.mirrorPromise) {
             mirrorResult.mirrorPromise.then((r) => {
-              if (r?.mirrorFailed) {
+              if (r?.offline) {
+                toast('Đang mất mạng — đã ghi vào Nợ chung, sẽ tự điền sang sổ riêng của thành viên đó khi có mạng lại (cần thêm/sửa lại lúc đó).', 'error');
+              } else if (r?.mirrorFailed) {
                 toast('Đã ghi vào Nợ chung, nhưng CHƯA điền/đồng bộ được vào sổ riêng của thành viên đó — kiểm tra lại đã chạy đủ SQL/deploy Edge Function mới chưa (xem docs mục 13).', 'error');
               }
             });

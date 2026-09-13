@@ -56,7 +56,102 @@ function emptyState() {
     debtors: [], receivableEntries: [],
     notifications: [], notificationReads: [],
     session: null,
+    outbox: [], // xem "Ngoại tuyến (offline)" phía dưới
   };
+}
+
+// ------------------------------------------------------------
+// Ngoại tuyến (offline): cho phép DÙNG APP + GHI DỮ LIỆU khi KHÔNG có mạng — mỗi thao tác ghi vẫn
+// cập nhật NGAY vào bộ nhớ + localStorage (dùng được liền, không phải chờ mạng), đồng thời tự xếp
+// vào 1 "hàng đợi" (outbox, cũng lưu trong localStorage nên sống sót qua việc tắt app/tắt máy) các
+// việc còn phải gửi lên Supabase. Có mạng lại (sự kiện 'online', hoặc mỗi lần refresh()) tự động gửi
+// hết hàng đợi lên ĐÚNG THEO THỨ TỰ đã ghi (quan trọng khi 1 dòng bị sửa/xóa nhiều lần lúc mất mạng,
+// hoặc khi 1 dòng phụ thuộc khóa ngoại vào dòng ghi trước nó — VD debt_entries cần creditors đã có
+// trước) — người khác sẽ thấy ngay sau khi đồng bộ xong. `created_at` được GHI SẴN ngay lúc thao tác
+// (không để Supabase tự điền lúc đồng bộ) nên dù đồng bộ trễ, thời điểm hiển thị vẫn ĐÚNG lúc thao
+// tác thật, không phải lúc có mạng lại. Mỗi thiết bị có hàng đợi RIÊNG (lưu trong localStorage của
+// máy đó) nên nhiều tài khoản cùng ghi lúc mất mạng ở nhiều máy khác nhau vẫn tự đồng bộ đầy đủ, độc
+// lập nhau, khi mỗi máy có mạng lại — không cần máy nào biết máy nào.
+//
+// LƯU Ý PHẠM VI: chỉ áp dụng cho Giao dịch + Mượn nợ/Trả nợ/Công nợ (mảng ghi dữ liệu chính, dùng
+// nhiều nhất) — bước "điền hộ" mirror sang sổ riêng của thành viên (gọi Edge Function, không phải
+// ghi bảng trực tiếp) và các mục khác (Danh mục, Ngân sách, Định kỳ, Tiết kiệm, Kế hoạch, Thông báo,
+// Quản lý User, Cài đặt) vẫn cần có mạng như trước, có thể bổ sung sau nếu cần.
+// ------------------------------------------------------------
+function isOnline() {
+  return typeof navigator === 'undefined' || navigator.onLine !== false;
+}
+/** Lỗi có phải do MẠNG không — để phân biệt với lỗi THẬT (dữ liệu sai, bị chặn quyền...): lỗi mạng
+ * thì xếp hàng đợi gửi lại sau, lỗi thật thì phải báo ngay, không nên giấu vào hàng đợi. */
+function isNetworkError(error) {
+  const msg = ((error && error.message) || '').toLowerCase();
+  return !isOnline() || msg.includes('failed to fetch') || msg.includes('load failed') || msg.includes('network') || msg.includes('econn');
+}
+function queueWrite(table, method, payload, match) {
+  state.outbox.push({ id: genId('op'), table, method, payload: payload || null, match: match || null, createdAt: new Date().toISOString() });
+  persist();
+}
+function applyMatch(query, match) {
+  if (!match) return query;
+  for (const m of (Array.isArray(match) ? match : [match])) query = query.eq(m.column, m.value);
+  return query;
+}
+/** Thử ghi thẳng lên Supabase (insert/update/delete). Mất mạng (hoặc lỗi rõ do mạng) -> tự xếp vào
+ * outbox để gửi lại sau, coi như đã "lưu tạm" xong (KHÔNG throw) — nơi gọi vẫn cập nhật bộ nhớ/
+ * localStorage của mình bình thường, chỉ là chưa lên tới Supabase. Lỗi THẬT thì trả lỗi để nơi gọi
+ * tự throw như trước (không nên giấu lỗi thật vào hàng đợi, người dùng cần biết ngay). */
+async function tryWrite(sb, table, method, payload, match) {
+  if (!isOnline()) { queueWrite(table, method, payload, match); return { queued: true, error: null }; }
+  try {
+    let q = sb.from(table);
+    if (method === 'insert') q = q.insert(payload);
+    else if (method === 'update') q = applyMatch(q.update(payload), match);
+    else if (method === 'delete') q = applyMatch(q.delete(), match);
+    const { error } = await q;
+    if (error) {
+      if (isNetworkError(error)) { queueWrite(table, method, payload, match); return { queued: true, error: null }; }
+      return { queued: false, error };
+    }
+    return { queued: false, error: null };
+  } catch (e) {
+    // fetch tự throw exception (mất mạng giữa chừng) thay vì trả {error} như PostgREST thường làm.
+    queueWrite(table, method, payload, match);
+    return { queued: true, error: null };
+  }
+}
+/** Số việc đang chờ đồng bộ — hiện lên giao diện (xem components/shell.js) để người dùng biết đang
+ * có thay đổi CHƯA lên tới Supabase, tránh tưởng nhầm là mất dữ liệu hoặc app bị lỗi. */
+export function pendingSyncCount() { return state.outbox.length; }
+
+let syncingOutbox = false;
+/** Gửi hết hàng đợi lên Supabase theo ĐÚNG THỨ TỰ đã ghi. Dừng lại (giữ nguyên phần còn lại) ngay
+ * khi gặp lỗi mạng — thử lại ở lần gọi sau (sự kiện 'online', hoặc mỗi lần refresh()/vào trang Công
+ * nợ). An toàn gọi lặp lại nhiều lần (tự bỏ qua nếu đang chạy dở hoặc hàng đợi đang rỗng). */
+export async function syncOutbox() {
+  if (syncingOutbox || !state.outbox.length || !isOnline()) return;
+  syncingOutbox = true;
+  try {
+    const session = getSession();
+    const sb = getSupabaseClient(session?.sbToken);
+    while (state.outbox.length) {
+      const op = state.outbox[0];
+      let q = sb.from(op.table);
+      if (op.method === 'insert') q = q.insert(op.payload);
+      else if (op.method === 'update') q = applyMatch(q.update(op.payload), op.match);
+      else if (op.method === 'delete') q = applyMatch(q.delete(), op.match);
+      let error = null;
+      try { ({ error } = await q); } catch (e) { error = e; }
+      if (error) {
+        console.warn('syncOutbox: lỗi đồng bộ, giữ lại thử lần sau:', error.message || error);
+        break;
+      }
+      state.outbox.shift();
+      persist();
+    }
+  } finally {
+    syncingOutbox = false;
+    notify();
+  }
 }
 
 /** Chỉ đọc cache trong localStorage — KHÔNG đụng mạng, xong ngay lập tức. Gọi hàm này rồi vẽ màn
@@ -84,6 +179,15 @@ export async function refresh() {
       // xuất luôn để bắt đăng nhập lại lấy phiên mới, thay vì để người dùng hoang mang.
       sessionExpiredNotice = true;
       logout();
+      return;
+    }
+    await syncOutbox();
+    if (state.outbox.length) {
+      // Vẫn còn thay đổi CHƯA đồng bộ được lên Supabase (đang mất mạng, hoặc lỗi khác) -> KHÔNG được
+      // tải lại toàn bộ dữ liệu từ server lúc này, vì loadSessionData() thay THẲNG mảng transactions/
+      // debtEntries/... bằng dữ liệu server, sẽ xóa mất đúng những thay đổi cục bộ chưa kịp gửi lên.
+      persist();
+      notify();
       return;
     }
     try { await loadSessionData(state.session.sbToken); }
@@ -445,14 +549,16 @@ export function getTransaction(id) { return state.transactions.find((t) => t.id 
 export async function addTransaction({ type, amount, categoryId, note, date, recurringId }) {
   const session = getSession();
   const sb = getSupabaseClient(session?.sbToken);
+  const createdAt = new Date().toISOString(); // ghi sẵn NGAY LÚC NÀY — dù lát nữa mới đồng bộ được
+  // (mất mạng) thì thời điểm hiển thị vẫn đúng lúc thao tác thật, không phải lúc có mạng lại.
   const row = {
     id: genId('txn'), type, amount: Number(amount) || 0, category_id: categoryId || null,
     note: note || '', txn_date: date || new Date().toISOString().slice(0, 10),
-    user_id: session.id, recurring_id: recurringId || null,
+    user_id: session.id, recurring_id: recurringId || null, created_at: createdAt,
   };
-  const { error } = await sb.from('transactions').insert(row);
+  const { error } = await tryWrite(sb, 'transactions', 'insert', row);
   if (error) throw new Error('Không lưu được giao dịch, thử lại sau.');
-  state.transactions.unshift(mapTransactionRow({ ...row, created_at: new Date().toISOString() }));
+  state.transactions.unshift(mapTransactionRow(row));
   notify();
 }
 /** Tìm dòng Công nợ (sổ nợ/sổ cho vay) ĐI KÈM 1 giao dịch cụ thể (tạo từ ô Mượn nợ/Trả nợ ở form
@@ -480,18 +586,18 @@ export async function updateTransaction(id, { type, amount, categoryId, note, da
     if (newAmount > maxAmount) throw new Error(`Số tiền không được vượt quá ${formatVND(maxAmount)} (nợ còn lại).`);
   }
   const patch = { type, amount: newAmount, category_id: categoryId || null, note: note || '', txn_date: date };
-  const { error } = await sb.from('transactions').update(patch).eq('id', id);
+  const { error } = await tryWrite(sb, 'transactions', 'update', patch, { column: 'id', value: id });
   if (error) throw new Error('Không cập nhật được giao dịch, thử lại sau.');
   const t = getTransaction(id);
   if (t) Object.assign(t, { type, amount: newAmount, categoryId: categoryId || null, note: note || '', date });
 
   if (linked) {
     const table = linked.type === 'debt' ? 'debt_entries' : 'receivable_entries';
-    const { error: entryErr } = await sb.from(table).update({ amount: newAmount, entry_date: date }).eq('id', linked.entry.id);
+    const { error: entryErr } = await tryWrite(sb, table, 'update', { amount: newAmount, entry_date: date }, { column: 'id', value: linked.entry.id });
     if (entryErr) throw new Error('Đã cập nhật giao dịch nhưng chưa đồng bộ được vào Công nợ, thử lại sau.');
     linked.entry.amount = newAmount;
     linked.entry.date = date;
-    if (linked.type === 'debt' && linked.entry.mirrorEntryId) {
+    if (linked.type === 'debt' && linked.entry.mirrorEntryId && isOnline()) {
       await mirrorDebtUpdate(linked.entry.mirrorEntryId, { amount: newAmount, date, debtKind: linked.entry.kind }, session?.sbToken);
     }
   }
@@ -505,16 +611,16 @@ export async function deleteTransaction(id) {
   const linked = findLinkedDebtOrReceivableEntry(id);
   if (linked) {
     const table = linked.type === 'debt' ? 'debt_entries' : 'receivable_entries';
-    const { error: linkErr } = await sb.from(table).delete().eq('id', linked.entry.id);
+    const { error: linkErr } = await tryWrite(sb, table, 'delete', null, { column: 'id', value: linked.entry.id });
     if (linkErr) throw new Error('Không xóa được dòng Công nợ liên kết, thử lại sau.');
     if (linked.type === 'debt') {
       state.debtEntries = state.debtEntries.filter((e) => e.id !== linked.entry.id);
-      if (linked.entry.mirrorEntryId) await mirrorDebtDelete(linked.entry.mirrorEntryId, session?.sbToken);
+      if (linked.entry.mirrorEntryId && isOnline()) await mirrorDebtDelete(linked.entry.mirrorEntryId, session?.sbToken);
     } else {
       state.receivableEntries = state.receivableEntries.filter((e) => e.id !== linked.entry.id);
     }
   }
-  const { error } = await sb.from('transactions').delete().eq('id', id);
+  const { error } = await tryWrite(sb, 'transactions', 'delete', null, { column: 'id', value: id });
   if (error) throw new Error('Không xóa được giao dịch, thử lại sau.');
   state.transactions = state.transactions.filter((t) => t.id !== id);
   notify();
@@ -859,10 +965,13 @@ function findOpenCreditorByName(name, { shared = false, memberUserId = null } = 
 async function ensureCreditor(name, sb, session, { shared = false, memberUserId = null } = {}) {
   const existing = findOpenCreditorByName(name, { shared, memberUserId });
   if (existing) return existing;
-  const row = { id: genId('creditor'), name: name.trim(), note: '', user_id: session.id, shared, member_user_id: memberUserId || null };
-  const { error } = await sb.from('creditors').insert(row);
+  const row = {
+    id: genId('creditor'), name: name.trim(), note: '', user_id: session.id, shared, member_user_id: memberUserId || null,
+    created_at: new Date().toISOString(),
+  };
+  const { error } = await tryWrite(sb, 'creditors', 'insert', row);
   if (error) throw new Error('Không tạo được chủ nợ, thử lại sau.');
-  const c = mapCreditorRow({ ...row, created_at: new Date().toISOString() });
+  const c = mapCreditorRow(row);
   state.creditors.push(c);
   return c;
 }
@@ -888,6 +997,10 @@ function mirrorEntryDescription(debtEntryKind) {
  * ('charge'/'payment') — tự suy ra kind bên receivable_entries ('lend'/'collect') + mô tả cố định. */
 async function mirrorDebtAdd(creditor, { debtKind, amount, date, sbToken }) {
   if (!creditor.memberUserId) return null;
+  // Bước điền hộ gọi Edge Function (không phải ghi bảng trực tiếp) nên KHÔNG xếp được vào hàng đợi
+  // offline như các thao tác khác — mất mạng thì bỏ qua NGAY (không thử fetch cho tốn thời gian chờ
+  // vô ích), Nợ chung vẫn đã ghi đúng; cần làm lại thao tác này khi có mạng nếu muốn có mirror.
+  if (!isOnline()) return null;
   try {
     const res = await callAccountFunction(sbToken, {
       type: 'debt-mirror-add', memberUserId: creditor.memberUserId, debtorId: creditor.mirrorDebtorId,
@@ -941,25 +1054,27 @@ export async function addDebtCharge({ creditorId, creditorName, memberUserId, sh
     creditor = await ensureCreditor(name, sb, session, { shared: isShared });
   }
 
+  const nowIso = new Date().toISOString(); // ghi sẵn NGAY LÚC NÀY, xem addTransaction() để biết vì sao.
   let txnRow = null;
   if (addToTransactions) {
     const catName = getCategory(categoryId)?.name || 'Mượn nợ';
     txnRow = {
       id: genId('txn'), type: 'income', amount: chargeAmount, category_id: categoryId || null,
-      note: `${catName}: ${creditor.name}${description ? ' - ' + description : ''}`, txn_date: entryDate, user_id: session.id, recurring_id: null,
+      note: `${catName}: ${creditor.name}${description ? ' - ' + description : ''}`, txn_date: entryDate,
+      user_id: session.id, recurring_id: null, created_at: nowIso,
     };
-    const { error: txnErr } = await sb.from('transactions').insert(txnRow);
+    const { error: txnErr } = await tryWrite(sb, 'transactions', 'insert', txnRow);
     if (txnErr) throw new Error('Không tạo được giao dịch, thử lại sau.');
   }
   const row = {
     id: genId('debtentry'), creditor_id: creditor.id, kind: 'charge', amount: chargeAmount,
     entry_date: entryDate, description: description || '',
-    transaction_id: txnRow ? txnRow.id : null, user_id: session.id, shared: isShared,
+    transaction_id: txnRow ? txnRow.id : null, user_id: session.id, shared: isShared, created_at: nowIso,
   };
-  const { error } = await sb.from('debt_entries').insert(row);
+  const { error } = await tryWrite(sb, 'debt_entries', 'insert', row);
   if (error) throw new Error('Không lưu được ghi nợ, thử lại sau.');
-  if (txnRow) state.transactions.unshift(mapTransactionRow({ ...txnRow, created_at: new Date().toISOString() }));
-  const entry = mapDebtEntryRow({ ...row, created_at: new Date().toISOString() });
+  if (txnRow) state.transactions.unshift(mapTransactionRow(txnRow));
+  const entry = mapDebtEntryRow(row);
   state.debtEntries.unshift(entry);
   notify(); // vẽ ngay phần Nợ chung — KHÔNG chờ bước điền hộ mirror bên dưới (mạng chậm/edge function
             // phản hồi lâu sẽ khiến form Thêm giao dịch bị đứng chờ nếu để chặn ở đây).
@@ -978,6 +1093,7 @@ export async function addDebtCharge({ creditorId, creditorName, memberUserId, sh
       return { mirrorFailed: true };
     }
     if (!creditor.memberUserId) return { mirrorFailed: false };
+    if (!isOnline()) return { mirrorFailed: true, offline: true }; // không thử fetch lúc mất mạng, xem mirrorDebtAdd().
     const mirror = await mirrorDebtAdd(creditor, { debtKind: 'charge', amount: chargeAmount, date: entryDate, sbToken: session?.sbToken });
     if (!mirror) return { mirrorFailed: true };
     // LƯU LẠI con trỏ tới dòng mirror vừa tạo (mirror_debtor_id/mirror_entry_id) — nếu 2 lệnh update
@@ -1012,25 +1128,27 @@ export async function addDebtPayment(creditorId, { amount, date, categoryId, des
   if (payAmount > balance) throw new Error(`Số tiền không được vượt quá ${formatVND(balance)} (nợ còn lại).`);
   const payDate = date || new Date().toISOString().slice(0, 10);
 
+  const nowIso = new Date().toISOString(); // ghi sẵn NGAY LÚC NÀY, xem addTransaction() để biết vì sao.
   let txnRow = null;
   if (addToTransactions) {
     const catName = getCategory(categoryId)?.name || 'Trả nợ';
     txnRow = {
       id: genId('txn'), type: 'expense', amount: payAmount, category_id: categoryId || null,
-      note: `${catName}: ${creditor.name}`, txn_date: payDate, user_id: session.id, recurring_id: null,
+      note: `${catName}: ${creditor.name}`, txn_date: payDate, user_id: session.id, recurring_id: null, created_at: nowIso,
     };
-    const { error: txnErr } = await sb.from('transactions').insert(txnRow);
+    const { error: txnErr } = await tryWrite(sb, 'transactions', 'insert', txnRow);
     if (txnErr) throw new Error('Không tạo được giao dịch, thử lại sau.');
   }
   const row = {
     id: genId('debtentry'), creditor_id: creditorId, kind: 'payment', amount: payAmount,
-    entry_date: payDate, description: description || '', transaction_id: txnRow ? txnRow.id : null, user_id: session.id, shared: !!creditor.shared,
+    entry_date: payDate, description: description || '', transaction_id: txnRow ? txnRow.id : null,
+    user_id: session.id, shared: !!creditor.shared, created_at: nowIso,
   };
-  const { error: entryErr } = await sb.from('debt_entries').insert(row);
+  const { error: entryErr } = await tryWrite(sb, 'debt_entries', 'insert', row);
   if (entryErr) throw new Error(txnRow ? 'Đã tạo giao dịch nhưng chưa lưu được vào sổ nợ, thử lại sau.' : 'Không lưu được vào sổ nợ, thử lại sau.');
 
-  if (txnRow) state.transactions.unshift(mapTransactionRow({ ...txnRow, created_at: new Date().toISOString() }));
-  const entry = mapDebtEntryRow({ ...row, created_at: new Date().toISOString() });
+  if (txnRow) state.transactions.unshift(mapTransactionRow(txnRow));
+  const entry = mapDebtEntryRow(row);
   state.debtEntries.unshift(entry);
   notify(); // vẽ ngay — không chờ bước điền hộ mirror bên dưới, xem addDebtCharge.
 
@@ -1039,6 +1157,7 @@ export async function addDebtPayment(creditorId, { amount, date, categoryId, des
   // Chạy NỀN (không await ở đây), xem addDebtCharge.
   const mirrorPromise = (async () => {
     if (!(creditor.memberUserId && creditor.mirrorDebtorId)) return { mirrorFailed: false };
+    if (!isOnline()) return { mirrorFailed: true, offline: true };
     const mirror = await mirrorDebtAdd(creditor, { debtKind: 'payment', amount: payAmount, date: payDate, sbToken: session?.sbToken });
     if (!mirror) return { mirrorFailed: true };
     const { error: entryLinkErr } = await sb.from('debt_entries').update({ mirror_entry_id: mirror.entryId }).eq('id', entry.id);
@@ -1077,29 +1196,29 @@ export async function updateDebtEntry(id, { amount, date, description, categoryI
     const note = e.kind === 'charge' ? `${catName}: ${creditor ? creditor.name : ''}${patch.description ? ' - ' + patch.description : ''}` : `${catName}: ${creditor ? creditor.name : ''}`;
     const txnRow = {
       id: genId('txn'), type: txnType, amount: newAmount, category_id: categoryId || null,
-      note, txn_date: newDate, user_id: session.id, recurring_id: null,
+      note, txn_date: newDate, user_id: session.id, recurring_id: null, created_at: new Date().toISOString(),
     };
-    const { error: txnErr } = await sb.from('transactions').insert(txnRow);
+    const { error: txnErr } = await tryWrite(sb, 'transactions', 'insert', txnRow);
     if (txnErr) throw new Error('Không tạo được giao dịch, thử lại sau.');
-    state.transactions.unshift(mapTransactionRow({ ...txnRow, created_at: new Date().toISOString() }));
+    state.transactions.unshift(mapTransactionRow(txnRow));
     newTransactionId = txnRow.id;
   } else if (!addToTransactions && e.transactionId) {
     // Trước đây có đưa vào thu/chi, giờ bỏ tích -> xóa giao dịch đã tạo.
-    await sb.from('transactions').delete().eq('id', e.transactionId);
+    await tryWrite(sb, 'transactions', 'delete', null, { column: 'id', value: e.transactionId });
     state.transactions = state.transactions.filter((t) => t.id !== e.transactionId);
     newTransactionId = null;
   } else if (addToTransactions && e.transactionId) {
     // Vẫn đưa vào thu/chi -> đồng bộ số tiền/ngày cho giao dịch đã có.
-    const { error: txnErr } = await sb.from('transactions').update({ amount: newAmount, txn_date: newDate }).eq('id', e.transactionId);
+    const { error: txnErr } = await tryWrite(sb, 'transactions', 'update', { amount: newAmount, txn_date: newDate }, { column: 'id', value: e.transactionId });
     if (txnErr) throw new Error('Đã cập nhật sổ nợ nhưng chưa đồng bộ được giao dịch, thử lại sau.');
     const t = state.transactions.find((x) => x.id === e.transactionId);
     if (t) { t.amount = newAmount; t.date = newDate; }
   }
   patch.transaction_id = newTransactionId;
-  const { error } = await sb.from('debt_entries').update(patch).eq('id', id);
+  const { error } = await tryWrite(sb, 'debt_entries', 'update', patch, { column: 'id', value: id });
   if (error) throw new Error('Không cập nhật được, thử lại sau.');
   Object.assign(e, { amount: newAmount, date: newDate, description: patch.description, transactionId: newTransactionId });
-  if (creditor?.memberUserId && e.mirrorEntryId) {
+  if (creditor?.memberUserId && e.mirrorEntryId && isOnline()) {
     await mirrorDebtUpdate(e.mirrorEntryId, { amount: newAmount, date: newDate, debtKind: e.kind }, session?.sbToken);
   }
   notify();
@@ -1111,14 +1230,14 @@ export async function deleteDebtEntry(id) {
   if (!e) throw new Error('Không tìm thấy dòng sổ nợ.');
   const session = getSession();
   const sb = getSupabaseClient(session?.sbToken);
-  const { error } = await sb.from('debt_entries').delete().eq('id', id);
+  const { error } = await tryWrite(sb, 'debt_entries', 'delete', null, { column: 'id', value: id });
   if (error) throw new Error('Không xóa được, thử lại sau.');
   if (e.transactionId) {
-    await sb.from('transactions').delete().eq('id', e.transactionId);
+    await tryWrite(sb, 'transactions', 'delete', null, { column: 'id', value: e.transactionId });
     state.transactions = state.transactions.filter((t) => t.id !== e.transactionId);
   }
   state.debtEntries = state.debtEntries.filter((x) => x.id !== id);
-  if (e.mirrorEntryId) await mirrorDebtDelete(e.mirrorEntryId, session?.sbToken);
+  if (e.mirrorEntryId && isOnline()) await mirrorDebtDelete(e.mirrorEntryId, session?.sbToken);
   notify();
 }
 export async function updateCreditor(id, { name, note }) {

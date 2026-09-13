@@ -45,6 +45,7 @@ export function buildShell(root, isOwner) {
         <button class="btn btn-outline btn-block" id="btn-logout-side" style="margin-top:8px">${icon('logout', 'icon-sm')} Đăng xuất</button>
       </aside>
       <div class="main-col">
+        <div class="sync-banner" id="sync-banner" hidden></div>
         <header class="app-header" id="app-header"></header>
         <div id="filter-slot"></div>
         <main class="app-content" id="app-content"></main>
@@ -55,6 +56,23 @@ export function buildShell(root, isOwner) {
   renderSidebarNav(nav);
   renderBottomNav(nav);
   document.getElementById('btn-logout-side').addEventListener('click', onLogoutClick);
+}
+
+/** Báo đang mất mạng và/hoặc còn thay đổi CHƯA đồng bộ lên Supabase (xem outbox trong state.js) —
+ * gọi lại mỗi lần vẽ trang (app.js) để luôn đúng thực tế hiện tại, khỏi phải tự đoán. */
+export function updateSyncBanner(pendingCount) {
+  const el = document.getElementById('sync-banner');
+  if (!el) return;
+  const offline = typeof navigator !== 'undefined' && navigator.onLine === false;
+  if (!offline && !pendingCount) { el.hidden = true; return; }
+  el.hidden = false;
+  if (offline) {
+    el.textContent = pendingCount
+      ? `Đang mất mạng — ${pendingCount} thay đổi sẽ tự đồng bộ khi có mạng lại.`
+      : 'Đang mất mạng — vẫn xem/ghi dữ liệu bình thường, sẽ tự đồng bộ khi có mạng lại.';
+  } else {
+    el.textContent = `Đang đồng bộ ${pendingCount} thay đổi lên máy chủ...`;
+  }
 }
 
 function renderSidebarNav(nav) {
