@@ -1,6 +1,7 @@
 import * as S from './state.js';
 import { buildShell, updateActiveNav, updateSyncBanner } from './components/shell.js';
 import { closeAllModals } from './components/modal.js';
+import { toast } from './components/toast.js';
 import { renderLogin } from './views/login.js';
 import { renderChangePassword } from './views/changePassword.js';
 
@@ -119,8 +120,15 @@ window.addEventListener('qtd:logout', () => { closeAllModals(); S.logout(); loca
 // - setInterval: hẹn giờ dự phòng, rút ngắn còn 5 giây (thay vì 20 giây) vì
 //   bản thân việc kiểm tra gần như miễn phí (chỉ thật sự gọi mạng khi ĐANG
 //   có việc chờ đồng bộ) — tránh cảm giác "phải chờ lâu mới thấy đồng bộ".
-function trySyncNow() {
-  S.syncOutbox();
+// Trước đây "Đang đồng bộ..." cứ hiện mãi mà không có gì báo lúc XONG (chỉ tự ẩn banner đi, dễ tưởng
+// nhầm là "không biết có xong chưa") — giờ so sánh số việc còn chờ TRƯỚC/SAU mỗi lần thử: từ >0 về
+// hẳn 0 (và không có lỗi thật) mới coi là "vừa đồng bộ xong" -> báo 1 toast thành công rõ ràng.
+async function trySyncNow() {
+  const hadPending = S.pendingSyncCount() > 0;
+  await S.syncOutbox();
+  if (hadPending && S.pendingSyncCount() === 0 && !S.getSyncIssue()) {
+    toast('Đã đồng bộ xong tất cả thay đổi lên máy chủ', 'success');
+  }
   if (root) updateSyncBanner(S.pendingSyncCount(), S.getSyncIssue());
 }
 window.addEventListener('online', trySyncNow);
@@ -128,7 +136,7 @@ window.addEventListener('offline', () => { if (root) updateSyncBanner(S.pendingS
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') trySyncNow(); });
 window.addEventListener('focus', trySyncNow);
 setInterval(() => {
-  if (navigator.onLine !== false && S.pendingSyncCount() > 0) S.syncOutbox();
+  if (navigator.onLine !== false && S.pendingSyncCount() > 0) trySyncNow();
 }, 5000);
 
 window.addEventListener('DOMContentLoaded', async () => {
@@ -146,16 +154,13 @@ window.addEventListener('DOMContentLoaded', async () => {
 // hợp lệ; thiếu nó, "Thêm vào màn hình chính" chỉ tạo 1 shortcut mở trong
 // Chrome bình thường — đúng hiện tượng thấy thanh địa chỉ như đang mở Chrome.
 //
-// updateViaCache:'none' + tự reload khi có bản mới kiểm soát trang: để mỗi
-// lần code cập nhật, tab ĐANG MỞ (không riêng gì lần mở mới) tự nhận bản mới
-// và tự tải lại — không cần ai bấm F12/xóa cache tay mỗi lần có bản mới nữa.
+// updateViaCache:'none': mỗi lần code cập nhật, tab ĐANG MỞ (không riêng gì lần mở mới) tự nhận
+// bản mới ở NỀN — không cần ai bấm F12/xóa cache tay. TRƯỚC ĐÂY tự location.reload() ngay khi có
+// bản mới kiểm soát trang — nghe hợp lý nhưng gây khó chịu THẬT: bản mới có thể tới bất cứ lúc nào,
+// kể cả đúng lúc đang gõ dở form (VD màn đăng nhập) -> bị tải lại NGANG XƯƠNG, mất hết dữ liệu vừa
+// gõ. Bỏ hẳn việc tự reload — có bản mới thì lần MỞ LẠI app tự nhiên kế tiếp (thoát/mở lại, hoặc F5)
+// sẽ tự dùng bản mới, khỏi cần ép reload ngay giữa lúc đang thao tác dở.
 if ('serviceWorker' in navigator) {
-  let reloadedForNewSw = false;
-  navigator.serviceWorker.addEventListener('controllerchange', () => {
-    if (reloadedForNewSw) return;
-    reloadedForNewSw = true;
-    location.reload();
-  });
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('service-worker.js', { updateViaCache: 'none' })
       .then((reg) => { reg.update().catch(() => {}); })

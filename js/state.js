@@ -98,6 +98,12 @@ function queueWrite(table, method, payload, match) {
   state.outbox.push({ id: genId('op'), table, method, payload: payload || null, match: match || null, createdAt: new Date().toISOString() });
   persist();
 }
+// Số lần thử lại (trong lúc THẬT SỰ đang online, xem syncOutbox()) trước khi coi 1 việc bị "kẹt" là
+// đáng báo cho người dùng biết — dù vẫn bị coi là "lỗi mạng" (VD do CORS bị chặn, luôn ném y hệt lỗi
+// "Failed to fetch" như mất mạng thật, KHÔNG cách nào phân biệt được từ phía trình duyệt) chứ không
+// phải mất mạng thật, thì sau chừng này lần thử vẫn y hệt lỗi -> báo rõ thay vì "đang đồng bộ" mãi mãi
+// mà không ai biết vì sao (vẫn giữ lại hàng đợi để tiếp tục thử, không rớt mất dữ liệu).
+const STUCK_RETRY_WARN_AFTER = 8;
 /** Xếp 1 việc mirror (điền hộ sang sổ riêng thành viên) còn dang dở vào hàng đợi riêng — xem
  * processPendingMirrors() phía dưới. `job.op`: 'add' (cần creditorId+entryId, tự tìm lại đúng dòng
  * đó lúc xử lý), 'update'/'delete' (cần mirrorEntryId — dòng mirror ĐÃ có sẵn từ trước, giờ cần sửa/
@@ -156,6 +162,13 @@ let syncingOutbox = false;
  * lại ở lần gọi sau (sự kiện 'online', hoặc mỗi lần refresh()/vào trang Công nợ). An toàn gọi lặp lại
  * nhiều lần (tự bỏ qua nếu đang chạy dở hoặc cả 2 hàng đợi đang rỗng). */
 export async function syncOutbox() {
+  // KHÔNG có phiên đăng nhập (VD đã đăng xuất, hoặc chưa đăng nhập lần nào trên máy này) -> đừng thử
+  // đồng bộ (không có token hợp lệ để ghi được gì) VÀ đừng gọi notify() ở finally bên dưới — trước đây
+  // cứ hễ còn hàng đợi (VD đăng xuất giữa chừng lúc còn thay đổi chưa kịp lên Supabase) là hẹn giờ/sự
+  // kiện 'online' liên tục gọi lại hàm này, notify() ở finally cứ thế vẽ lại MÀN ĐĂNG NHẬP (root.
+  // innerHTML = ... trong renderLogin) TỪ ĐẦU mỗi vài giây — đúng lúc người dùng đang gõ dở tên đăng
+  // nhập/mật khẩu thì bị "tải lại" xóa sạch input, y hệt phàn nàn "nhập gần xong bị tải lại mất dữ liệu".
+  if (!getSession()) return;
   if (syncingOutbox || !isOnline() || (!state.outbox.length && !(state.pendingMirrors || []).length)) return;
   syncingOutbox = true;
   lastSyncIssue = null; // để mỗi lần thử lại đều đánh giá lại từ đầu, không giữ mãi thông báo lỗi cũ nếu đã hết lỗi
@@ -171,6 +184,7 @@ export async function syncOutbox() {
       let error = null;
       try { ({ error } = await q); } catch (e) { error = e; }
       if (error) {
+        op.attempts = (op.attempts || 0) + 1;
         if (!isNetworkError(error)) {
           // Lỗi THẬT (VD RLS từ chối, thiếu cột, sai kiểu dữ liệu...) — KHÔNG phải cứ retry là tự hết,
           // giữ lại đây để người dùng/chủ sổ thấy ngay mà báo, thay vì tưởng "đang đồng bộ" mãi.
@@ -178,7 +192,14 @@ export async function syncOutbox() {
           lastSyncIssue = { message: `Lỗi đồng bộ (bảng ${op.table}): ${error.message || error}` };
         } else {
           console.warn('syncOutbox: lỗi mạng, giữ lại thử lần sau:', error.message || error);
+          if (op.attempts >= STUCK_RETRY_WARN_AFTER) {
+            // Đang ONLINE (điều kiện để vào được hàm này) mà vẫn lỗi y hệt "mất mạng" sau ngần này lần
+            // thử -> nhiều khả năng KHÔNG phải mất mạng thật (VD CORS/cấu hình chặn) — báo rõ, vẫn giữ
+            // lại hàng đợi để tiếp tục tự thử (không rớt mất dữ liệu chưa lên được).
+            lastSyncIssue = { message: `Vẫn chưa gửi được sau ${op.attempts} lần thử (bảng ${op.table}) dù đang có mạng — có thể do cấu hình chặn, không phải do mất mạng. Vẫn tiếp tục tự thử lại.` };
+          }
         }
+        persist(); // lưu lại op.attempts dù chưa bỏ item này khỏi hàng đợi
         break;
       }
       state.outbox.shift();
@@ -314,11 +335,7 @@ export async function login(identifier, password) {
 
 async function loadSessionData(token) {
   const sb = getSupabaseClient(token);
-  const [
-    { data: userRows }, { data: catRows }, { data: txnRows }, { data: budgetRows }, { data: recRows }, { data: goalRows },
-    { data: planRows }, { data: creditorRows }, { data: debtEntryRows }, { data: debtorRows }, { data: receivableEntryRows },
-    { data: notiRows }, { data: readRows },
-  ] = await Promise.all([
+  const results = await Promise.all([
     sb.from('user_profiles').select('*'),
     sb.from('categories').select('*').order('sort_order'),
     sb.from('transactions').select('*').order('txn_date', { ascending: false }),
@@ -333,20 +350,22 @@ async function loadSessionData(token) {
     sb.from('notifications').select('*'),
     sb.from('notification_reads').select('notification_id'),
   ]);
-  // PHÒNG VỆ chống "dữ liệu về 0": Supabase/RLS không NÉM LỖI khi 1 JWT không hợp lệ/khớp — nó chỉ
-  // âm thầm lọc MỌI bảng về RỖNG (0 dòng, coi như truy vấn "thành công"), Promise.all() ở trên vì vậy
-  // KHÔNG throw để lọt vào catch của nơi gọi (refresh()/login()) — mọi dòng gán bên dưới cứ thế chạy
-  // và ghi đè state hiện tại bằng toàn mảng RỖNG. Việc này rất dễ xảy ra đúng lúc mạng vừa chập chờn
-  // (VD vừa mất mạng xong bật lại, có mạng lại nhưng phiên/token chưa kịp ổn định) — trông y hệt "mất
-  // hết dữ liệu" dù dữ liệu thật trên Supabase vẫn còn nguyên. Nếu MỌI bảng cốt lõi cùng lúc đều rỗng
-  // trong khi bộ nhớ hiện tại ĐANG có dữ liệu thật (không phải lần đăng nhập đầu/tài khoản mới, lúc đó
-  // rỗng là đúng) -> coi lần tải này là THẤT BẠI, ném lỗi để refresh() giữ nguyên dữ liệu cũ và tự thử
-  // lại sau, còn hơn ghi đè về "0" oan.
-  const looksSuspiciouslyEmpty = !userRows?.length && !catRows?.length && !txnRows?.length && !creditorRows?.length && !debtEntryRows?.length;
-  const hadRealData = state.categories.length > 0 || state.transactions.length > 0;
-  if (looksSuspiciouslyEmpty && hadRealData) {
-    throw new Error('Kết quả tải dữ liệu trống bất thường (nghi mạng/phiên chập chờn) — đã bỏ qua, giữ nguyên dữ liệu cũ.');
-  }
+  // PHÒNG VỆ chống "dữ liệu về 0": khi mất mạng/lỗi, thư viện Supabase KHÔNG ném lỗi (không làm
+  // Promise.all() ở trên reject) — nó trả về BÌNH THƯỜNG với { data: null, error: {...} } cho MỌI câu
+  // truy vấn bị lỗi (VD "Failed to fetch" lúc mất mạng, hoặc RLS âm thầm lọc rỗng nếu JWT không hợp
+  // lệ/khớp) — coi như "thành công" ở mức Promise. Trước đây code chỉ lấy mỗi `data` (bỏ qua hẳn
+  // `error`) rồi `data || []` -> null biến thành RỖNG và ghi đè thẳng vào state, đúng lúc mạng chập
+  // chờn (dễ xảy ra nhất ngay khi vừa có mạng lại, hoặc khi đang mất mạng mà refresh() vẫn lỡ gọi tới
+  // đây) là y hệt hiện tượng "dữ liệu về 0 như ban đầu" dù dữ liệu thật trên Supabase vẫn còn nguyên.
+  // Giờ kiểm tra `error` TRỰC TIẾP trên từng câu — chỉ CẦN 1 câu lỗi là coi cả lần tải này thất bại,
+  // ném lỗi để refresh()/login() giữ nguyên dữ liệu cũ và tự thử lại sau, không ghi đè gì cả.
+  const firstError = results.find((r) => r.error)?.error;
+  if (firstError) throw new Error(`Tải dữ liệu phiên bị lỗi (${firstError.message || firstError}) — đã bỏ qua, giữ nguyên dữ liệu cũ.`);
+  const [
+    { data: userRows }, { data: catRows }, { data: txnRows }, { data: budgetRows }, { data: recRows }, { data: goalRows },
+    { data: planRows }, { data: creditorRows }, { data: debtEntryRows }, { data: debtorRows }, { data: receivableEntryRows },
+    { data: notiRows }, { data: readRows },
+  ] = results;
   state.users = (userRows || []).map(mapUserProfileRow);
   state.categories = (catRows || []).map(mapCategoryRow);
   state.transactions = (txnRows || []).map(mapTransactionRow);
@@ -1142,7 +1161,7 @@ async function performMirrorDelete(mirrorEntryId, sbToken) {
 // viên KHÔNG BAO GIỜ nhận được dòng mirror mà không ai biết. Giờ cho thử lại tối đa
 // MIRROR_JOB_MAX_ATTEMPTS lần (mỗi lần syncOutbox() được gọi mới tính là 1 lần) trước khi thật sự bỏ
 // cuộc — lúc đó mới báo rõ qua lastSyncIssue, không im lặng nữa.
-const MIRROR_JOB_MAX_ATTEMPTS = 5;
+const MIRROR_JOB_MAX_ATTEMPTS = 15;
 /** Làm hết hàng đợi mirror còn dang dở (state.pendingMirrors) — gọi từ syncOutbox() SAU khi outbox
  * chính đã trống hẳn (creditor/dòng sổ nợ chắc chắn đã có thật trên Supabase để lưu con trỏ mirror_*
  * ngược lại). Gặp lỗi MẠNG thì dừng lại NGAY, giữ nguyên hàng đợi để thử lại lần sau. */
@@ -1173,12 +1192,17 @@ async function processPendingMirrors() {
       result = { status: 'error' };
     }
     if (result.status === 'ok') { state.pendingMirrors.shift(); persist(); continue; }
-    // 'network' HOẶC 'error' đều thử lại — chỉ khác ở chỗ 'error' còn TÍNH số lần đã thử, hết lượt
-    // mới thật sự bỏ cuộc (xem giải thích ở trên MIRROR_JOB_MAX_ATTEMPTS).
-    job.attempts = (job.attempts || 0) + (result.status === 'error' ? 1 : 0);
-    if (result.status === 'error' && job.attempts >= MIRROR_JOB_MAX_ATTEMPTS) {
-      console.warn(`processPendingMirrors: bỏ qua job "${job.op}" sau ${job.attempts} lần thử vẫn lỗi.`);
-      lastSyncIssue = { message: `Không tự điền được sang sổ riêng thành viên (đã thử ${job.attempts} lần) — cần vào tay ghi lại khoản đó cho đúng.` };
+    // TÍNH số lần thử cho CẢ 'network' lẫn 'error' — 1 lỗi mạng "giả" (VD CORS bị chặn cấu hình sai,
+    // trình duyệt báo y hệt lỗi mất mạng thật, KHÔNG cách nào phân biệt được) mà cứ mãi coi là "chờ có
+    // mạng" thì sẽ lặp vô hạn không bao giờ tự hết — đủ số lần thử (dù trạng thái nào) mới thật sự bỏ
+    // cuộc, xem MIRROR_JOB_MAX_ATTEMPTS.
+    job.attempts = (job.attempts || 0) + 1;
+    if (job.attempts >= MIRROR_JOB_MAX_ATTEMPTS) {
+      // Kèm lý do LẦN CUỐI (nếu là lỗi thật, có `reason` từ Edge Function) vào thông báo — giúp biết
+      // ngay cần sửa gì (VD thiếu SQL/cột) thay vì chỉ biết chung chung "không xong".
+      const reasonSuffix = result.reason ? ` — lý do: ${result.reason}` : (result.status === 'network' ? ' — nghi do mạng/CORS, không phải do dữ liệu sai' : '');
+      console.warn(`processPendingMirrors: bỏ qua job "${job.op}" sau ${job.attempts} lần thử vẫn không xong (trạng thái cuối: ${result.status}).`, result.reason || '');
+      lastSyncIssue = { message: `Không tự điền được sang sổ riêng thành viên (đã thử ${job.attempts} lần)${reasonSuffix} — cần vào tay ghi lại khoản đó cho đúng.` };
       state.pendingMirrors.shift();
       persist();
       continue;
