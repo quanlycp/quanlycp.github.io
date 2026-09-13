@@ -154,6 +154,15 @@ export function pendingSyncCount() { return state.outbox.length + (state.pending
 // shell.js) thay vì im lặng mãi. KHÔNG lưu vào localStorage (chỉ để hiện tạm thời trong phiên hiện tại).
 let lastSyncIssue = null;
 export function getSyncIssue() { return lastSyncIssue; }
+/** Báo 1 lỗi THẬT (không phải mất mạng) gặp phải lúc điền hộ mirror lúc ĐANG ONLINE (không đi qua
+ * outbox/pendingMirrors nên không tự có cơ hội hiện lên banner) — VD Edge Function trả lỗi/từ chối
+ * ngay lần thử đầu. Trước đây chỉ có 1 toast thoáng qua ~2 giây (dễ bỏ lỡ, nhất là đang bận thao tác
+ * khác) rồi biến mất, không còn dấu vết gì để biết CHÍNH XÁC lý do — giờ lưu lại lên banner đỏ (đứng
+ * yên tới khi hết lỗi) kèm gọi notify() để hiện NGAY, không cần đợi thao tác kế tiếp mới thấy. */
+function markMirrorFailure(reason) {
+  lastSyncIssue = { message: `Không tự điền được sang sổ riêng thành viên${reason ? ` — lý do: ${reason}` : ''} (xem docs mục 13.3 để kiểm tra đã deploy đủ Edge Function chưa).` };
+  notify();
+}
 
 let syncingOutbox = false;
 /** Gửi hết hàng đợi lên Supabase theo ĐÚNG THỨ TỰ đã ghi, xong mới xử lý tiếp hàng đợi mirror (xem
@@ -697,6 +706,7 @@ export async function updateTransaction(id, { type, amount, categoryId, note, da
         } else {
           const result = await performMirrorUpdate(linked.entry.mirrorEntryId, { amount: newAmount, date, debtKind: linked.entry.kind, sbToken: session?.sbToken });
           if (result.status === 'network') queueMirrorJob({ op: 'update', entryId: linked.entry.id, mirrorEntryId: linked.entry.mirrorEntryId, amount: newAmount, date, debtKind: linked.entry.kind });
+          else if (result.status === 'error') markMirrorFailure(result.reason);
         }
       }
     }
@@ -728,6 +738,7 @@ export async function deleteTransaction(id) {
         } else {
           const result = await performMirrorDelete(linked.entry.mirrorEntryId, session?.sbToken);
           if (result.status === 'network') queueMirrorJob({ op: 'delete', entryId: linked.entry.id, mirrorEntryId: linked.entry.mirrorEntryId });
+          else if (result.status === 'error') markMirrorFailure(result.reason);
         }
       }
     } else {
@@ -1285,6 +1296,7 @@ export async function addDebtCharge({ creditorId, creditorName, memberUserId, sh
     if (!isOnline()) { queueMirrorJob({ op: 'add', creditorId: creditor.id, entryId: entry.id, debtKind: 'charge', amount: chargeAmount, date: entryDate }); return { mirrorFailed: true, offline: true }; }
     const result = await performMirrorAdd(creditor, entry, { debtKind: 'charge', amount: chargeAmount, date: entryDate, sbToken: session?.sbToken });
     if (result.status === 'network') { queueMirrorJob({ op: 'add', creditorId: creditor.id, entryId: entry.id, debtKind: 'charge', amount: chargeAmount, date: entryDate }); return { mirrorFailed: true, offline: true }; }
+    if (result.status === 'error') markMirrorFailure(result.reason); // đang ONLINE mà vẫn lỗi thật -> báo LÊN BANNER (giữ lại được, không như toast biến mất sau vài giây), xem markMirrorFailure().
     return { mirrorFailed: result.status !== 'ok' };
   })();
 
@@ -1335,6 +1347,7 @@ export async function addDebtPayment(creditorId, { amount, date, categoryId, des
     if (!isOnline()) { queueMirrorJob({ op: 'add', creditorId: creditor.id, entryId: entry.id, debtKind: 'payment', amount: payAmount, date: payDate }); return { mirrorFailed: true, offline: true }; }
     const result = await performMirrorAdd(creditor, entry, { debtKind: 'payment', amount: payAmount, date: payDate, sbToken: session?.sbToken });
     if (result.status === 'network') { queueMirrorJob({ op: 'add', creditorId: creditor.id, entryId: entry.id, debtKind: 'payment', amount: payAmount, date: payDate }); return { mirrorFailed: true, offline: true }; }
+    if (result.status === 'error') markMirrorFailure(result.reason);
     return { mirrorFailed: result.status !== 'ok' };
   })();
 
@@ -1407,6 +1420,7 @@ export async function updateDebtEntry(id, { amount, date, description, categoryI
       } else {
         const result = await performMirrorUpdate(e.mirrorEntryId, { amount: newAmount, date: newDate, debtKind: e.kind, sbToken: session?.sbToken });
         if (result.status === 'network') queueMirrorJob({ op: 'update', entryId: e.id, mirrorEntryId: e.mirrorEntryId, amount: newAmount, date: newDate, debtKind: e.kind });
+        else if (result.status === 'error') markMirrorFailure(result.reason);
       }
     }
   }
@@ -1441,6 +1455,7 @@ export async function deleteDebtEntry(id) {
     } else {
       const result = await performMirrorDelete(e.mirrorEntryId, session?.sbToken);
       if (result.status === 'network') queueMirrorJob({ op: 'delete', entryId: id, mirrorEntryId: e.mirrorEntryId });
+      else if (result.status === 'error') markMirrorFailure(result.reason);
     }
   }
   notify();
