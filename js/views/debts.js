@@ -397,10 +397,17 @@ function openDecreaseModal(cfg, c, balance) {
           return;
         }
         try {
-          await cfg.api.addDecrease(c.id, { amount, date, categoryId, addToTransactions });
+          const result = await cfg.api.addDecrease(c.id, { amount, date, categoryId, addToTransactions });
           toast(`Đã ${cfg.decreaseEntryLabel.toLowerCase()}`, 'success');
           closeFn();
           openCounterpartDetail(c.id, cfg);
+          // Chủ nợ là 1 thành viên đã có mirror -> addDecrease chạy bước điền hộ NỀN (không chặn ở
+          // trên), xem S.addDebtPayment — chờ riêng rồi báo nếu thất bại.
+          if (result?.mirrorPromise) {
+            result.mirrorPromise.then((r) => {
+              if (r?.mirrorFailed) toast('Đã ghi vào Nợ chung, nhưng CHƯA đồng bộ được sang sổ riêng của thành viên đó.', 'error');
+            });
+          }
         } catch (err) { errEl.textContent = err.message || 'Có lỗi xảy ra'; errEl.style.display = 'block'; }
       });
     },

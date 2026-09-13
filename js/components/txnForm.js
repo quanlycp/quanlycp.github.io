@@ -109,13 +109,19 @@ export function openTransactionForm({ transaction, defaultType = 'expense', onSa
             await S.addTransaction({ type, amount, categoryId, date, note });
           }
           toast(transaction ? 'Đã lưu thay đổi' : 'Đã thêm giao dịch', 'success');
-          // Mượn/trả nợ với 1 thành viên trong sổ nhưng bước "điền hộ" sang sổ riêng của họ thất bại
-          // (xem S.addDebtCharge/addDebtPayment) -> báo rõ, đừng để im lặng tưởng nhầm app lỗi khác.
-          if (mirrorResult?.mirrorFailed) {
-            toast('Đã ghi vào Nợ chung, nhưng CHƯA điền/đồng bộ được vào sổ riêng của thành viên đó — kiểm tra lại đã chạy đủ SQL/deploy Edge Function mới chưa (xem docs mục 13).', 'error');
-          }
           close();
           onSaved && onSaved();
+          // Bước "điền hộ" sang sổ riêng của thành viên (mirror) chạy NỀN, không chặn đóng form ở
+          // trên (xem S.addDebtCharge/addDebtPayment) — chờ riêng ở đây rồi mới báo nếu nó thất bại,
+          // đừng để im lặng tưởng nhầm app lỗi khác. Form đã đóng nên toast này có thể hiện trễ hơn
+          // 1 chút sau khi người dùng đã rời màn — không sao, toast không phụ thuộc form còn mở hay không.
+          if (mirrorResult?.mirrorPromise) {
+            mirrorResult.mirrorPromise.then((r) => {
+              if (r?.mirrorFailed) {
+                toast('Đã ghi vào Nợ chung, nhưng CHƯA điền/đồng bộ được vào sổ riêng của thành viên đó — kiểm tra lại đã chạy đủ SQL/deploy Edge Function mới chưa (xem docs mục 13).', 'error');
+              }
+            });
+          }
         } catch (err) {
           errEl.textContent = err.message || 'Có lỗi xảy ra, thử lại sau.';
           errEl.style.display = 'block';
