@@ -98,11 +98,10 @@ export function openTransactionForm({ transaction, defaultType = 'expense', onSa
         errEl.style.display = 'none';
         btn.disabled = true;
         try {
-          let mirrorResult = null;
           if (isAddMode && category?.special === 'borrow') {
-            mirrorResult = await submitBorrow(sheet, { amount, date, description: note, categoryId });
+            await submitBorrow(sheet, { amount, date, description: note, categoryId });
           } else if (isAddMode && category?.special === 'repay') {
-            mirrorResult = await submitRepay(sheet, { amount, date, description: note, categoryId });
+            await submitRepay(sheet, { amount, date, description: note, categoryId });
           } else if (transaction) {
             await S.updateTransaction(transaction.id, { type, amount, categoryId, date, note });
           } else {
@@ -111,25 +110,11 @@ export function openTransactionForm({ transaction, defaultType = 'expense', onSa
           toast(transaction ? 'Đã lưu thay đổi' : 'Đã thêm giao dịch', 'success');
           close();
           onSaved && onSaved();
-          // Bước "điền hộ" sang sổ riêng của thành viên (mirror) chạy NỀN, không chặn đóng form ở
-          // trên (xem S.addDebtCharge/addDebtPayment) — chờ riêng ở đây rồi mới báo nếu nó thất bại,
-          // đừng để im lặng tưởng nhầm app lỗi khác. Form đã đóng nên toast này có thể hiện trễ hơn
-          // 1 chút sau khi người dùng đã rời màn — không sao, toast không phụ thuộc form còn mở hay không.
-          // Mất mạng lúc này KHÔNG còn là thất bại hẳn — bước điền hộ tự xếp hàng và tự làm lại khi có
-          // mạng (xem state.pendingMirrors/processPendingMirrors trong state.js), chỉ báo cho biết.
-          if (mirrorResult?.mirrorPromise) {
-            mirrorResult.mirrorPromise.then((r) => {
-              if (r?.offline) {
-                toast('Đang mất mạng — đã ghi vào Nợ chung, sẽ TỰ điền sang sổ riêng của thành viên đó khi có mạng lại, không cần làm tay.', 'default');
-              } else if (r?.mirrorFailed) {
-                toast('Đã ghi vào Nợ chung, nhưng CHƯA điền/đồng bộ được vào sổ riêng của thành viên đó — kiểm tra lại đã chạy đủ SQL/deploy Edge Function mới chưa (xem docs mục 13).', 'error');
-              } else if (r?.mirrorOk) {
-                // Báo THÀNH CÔNG rõ ràng (trước đây thành công thì im lặng hoàn toàn) — để biết chắc
-                // bước điền hộ CÓ chạy và CÓ được Edge Function xác nhận "ok", không phải đoán mò.
-                toast('Đã tự điền sang sổ riêng "Người khác nợ tôi" của thành viên đó.', 'success');
-              }
-            });
-          }
+          // Bước "điền hộ" sang sổ riêng của thành viên (mirror, nếu Mượn/Trả nợ chọn 1 thành viên)
+          // giờ LUÔN chạy qua hàng đợi đồng bộ chung (xem S.addDebtCharge/addDebtPayment và
+          // queueAndKickMirror trong state.js) — thành công/thất bại/còn chờ đều tự hiện qua dải
+          // banner đồng bộ + toast "đã đồng bộ xong" ở app.js, không cần tự báo riêng ở đây nữa (1
+          // toast RIÊNG cho việc này trước đây rất dễ bị bỏ lỡ vì chỉ hiện thoáng qua vài giây).
         } catch (err) {
           errEl.textContent = err.message || 'Có lỗi xảy ra, thử lại sau.';
           errEl.style.display = 'block';

@@ -632,10 +632,12 @@ GitHub, vì GitHub Pages chỉ phục vụ phần giao diện (HTML/CSS/JS), KH�
 
 Nếu chọn 1 thành viên khi Mượn nợ mà đăng nhập bằng tài khoản thành viên đó vẫn KHÔNG thấy khoản đó
 trong **Công nợ → Người khác nợ tôi** — 99% là do **CHƯA làm đủ** 13.1 + 13.2 ở trên (chưa chạy SQL,
-hoặc đã sửa code nhưng CHƯA bấm Deploy lại trên Supabase Dashboard). App sẽ tự báo bằng 1 thông báo
-đỏ ngay sau khi ghi ("Đã ghi vào Nợ chung, nhưng CHƯA điền/đồng bộ được...") nếu bước điền hộ này
-thất bại — khoản Nợ chung chính vẫn luôn ghi đúng bình thường dù bước điền hộ có lỗi, chỉ thiếu phần
-tiện ích tự điền thêm này thôi, không mất dữ liệu.
+hoặc đã sửa code nhưng CHƯA bấm Deploy lại trên Supabase Dashboard). Bước "điền hộ" này chạy qua đúng
+1 hàng đợi đồng bộ CHUNG với Giao dịch/Công nợ (xem mục 15) — nếu chưa xong ngay, dải banner phía
+trên đầu trang sẽ hiện "Đang đồng bộ N thay đổi..."; xong hẳn thì tự báo "Đã đồng bộ xong..."; còn
+nếu thử nhiều lần vẫn không được thì chuyển sang màu ĐỎ kèm lý do cụ thể — khoản Nợ chung chính vẫn
+luôn ghi đúng bình thường dù bước điền hộ này có lỗi, chỉ thiếu phần tiện ích tự điền thêm, không
+mất dữ liệu.
 
 Riêng trường hợp **đã thấy khoản mượn hiện đúng bên "Người khác nợ tôi", nhưng SAU ĐÓ xóa/sửa/trả
 nợ ở bên Nợ chung lại KHÔNG thấy đồng bộ theo** (dòng bên "Người khác nợ tôi" bị "mồ côi", không tự
