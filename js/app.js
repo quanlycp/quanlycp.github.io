@@ -145,7 +145,12 @@ window.addEventListener('focus', trySyncNow);
 // khi thật sự đang có việc chờ.
 setInterval(() => {
   if (root) updateSyncBanner(S.pendingSyncCount(), S.getSyncIssue());
-  if (navigator.onLine !== false && S.pendingSyncCount() > 0) trySyncNow();
+  // Không còn xét navigator.onLine trước khi thử ở đây nữa — cờ này không phải lúc nào cũng đáng tin
+  // cậy (khác nhau tùy trình duyệt/cách mô phỏng mất mạng lúc test); lỡ nó báo sai "vẫn offline" dù
+  // mạng đã có lại thật thì hẹn giờ này không bao giờ thử lại được nữa. syncOutbox() giờ tự quyết định
+  // qua chính kết quả gọi mạng thật (xem state.js), cứ gọi thử — không mạng thật thì tự thất bại rồi
+  // giữ nguyên hàng đợi như cũ, không tốn kém gì thêm.
+  if (S.pendingSyncCount() > 0) trySyncNow();
 }, 5000);
 
 window.addEventListener('DOMContentLoaded', async () => {
