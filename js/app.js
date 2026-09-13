@@ -91,7 +91,7 @@ function renderApp({ scrollTop = true } = {}) {
   if (match.view.renderHeader) match.view.renderHeader(headerEl);
   match.view.render(contentEl, filterEl, query);
   updateActiveNav(path);
-  updateSyncBanner(S.pendingSyncCount());
+  updateSyncBanner(S.pendingSyncCount(), S.getSyncIssue());
 }
 
 window.addEventListener('hashchange', () => {
@@ -121,10 +121,10 @@ window.addEventListener('qtd:logout', () => { closeAllModals(); S.logout(); loca
 //   có việc chờ đồng bộ) — tránh cảm giác "phải chờ lâu mới thấy đồng bộ".
 function trySyncNow() {
   S.syncOutbox();
-  if (root) updateSyncBanner(S.pendingSyncCount());
+  if (root) updateSyncBanner(S.pendingSyncCount(), S.getSyncIssue());
 }
 window.addEventListener('online', trySyncNow);
-window.addEventListener('offline', () => { if (root) updateSyncBanner(S.pendingSyncCount()); });
+window.addEventListener('offline', () => { if (root) updateSyncBanner(S.pendingSyncCount(), S.getSyncIssue()); });
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') trySyncNow(); });
 window.addEventListener('focus', trySyncNow);
 setInterval(() => {

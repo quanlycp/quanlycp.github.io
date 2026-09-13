@@ -747,7 +747,10 @@ của trình duyệt, cho phép MỞ được app ngay cả khi mất mạng nga
 sẵn từ trước) — có mạng vẫn luôn ưu tiên lấy bản mới nhất như trước, không sợ bị kẹt xem bản cũ.
 
 Có 1 dải màu vàng phía trên đầu trang khi đang mất mạng hoặc còn thay đổi chưa đồng bộ (kể cả bước
-điền hộ), để biết ngay là dữ liệu chưa lên tới máy chủ/chưa điền hộ xong, tránh tưởng nhầm là mất dữ liệu.
+điền hộ), để biết ngay là dữ liệu chưa lên tới máy chủ/chưa điền hộ xong, tránh tưởng nhầm là mất dữ
+liệu. Nếu gặp 1 lỗi THẬT lúc đồng bộ (không phải chỉ đang chờ có mạng — VD dữ liệu bị từ chối, hoặc
+bước điền hộ thử nhiều lần vẫn không được) thì dải này chuyển sang **màu đỏ** kèm mô tả lỗi cụ thể,
+để không còn "im lặng mãi" như trước — báo lại đúng nội dung dải đỏ đó nếu cần hỗ trợ.
 
 **Phạm vi hiện tại** — các mục khác vẫn cần có mạng như trước (có thể bổ sung sau nếu cần):
 Danh mục, Ngân sách, Định kỳ, Tiết kiệm, Kế hoạch, Thông báo, Quản lý User, Cài đặt, và phía "Cho
