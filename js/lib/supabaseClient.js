@@ -19,17 +19,29 @@ export const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiO
 // hiển thị trên Dashboard có thể khác đường dẫn thật tùy cách tạo function.
 export const API_FN_URL = 'https://iswfooouxpzcijynvalv.supabase.co/functions/v1/create-account';
 
+// state.js gọi getSupabaseClient() ở ĐẦU HẦU NHƯ MỌI HÀM đọc/ghi (hàng chục chỗ) — trước đây mỗi
+// lần gọi lại tự new createClient(...) MỘT LẦN NỮA dù JWT y hệt lần trước, tốn công dựng lại toàn
+// bộ client (khởi tạo lại các client con bên trong) một cách vô ích mỗi lần thêm/sửa/xóa 1 giao
+// dịch bất kỳ — đây chính là nguyên nhân cảm giác "chậm, phải chờ lâu". Giờ CACHE lại đúng 1 client
+// cho mỗi JWT (JWT gần như không đổi suốt cả phiên đăng nhập, xem SESSION_HOURS ở Edge Function) —
+// chỉ dựng lại client MỚI khi JWT thực sự đổi (đăng nhập lại/đổi phiên).
+let cachedClient = null;
+let cachedJwt = null;
 /**
- * Tạo 1 Supabase client — nếu có JWT riêng (do Edge Function cấp sau khi
- * xác minh mật khẩu) thì gắn vào header Authorization để RLS lọc đúng dữ
- * liệu của đúng người đó; không truyền gì thì chỉ có quyền của "anon" (gần
- * như không đọc/ghi được gì, vì mọi bảng đều yêu cầu đúng vé mới cho xem).
+ * Lấy (hoặc tạo mới nếu chưa có/JWT đổi) 1 Supabase client — nếu có JWT riêng (do Edge Function cấp
+ * sau khi xác minh mật khẩu) thì gắn vào header Authorization để RLS lọc đúng dữ liệu của đúng
+ * người đó; không truyền gì thì chỉ có quyền của "anon" (gần như không đọc/ghi được gì, vì mọi bảng
+ * đều yêu cầu đúng vé mới cho xem).
  */
 export function getSupabaseClient(jwt) {
-  return createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  const key = jwt || null;
+  if (cachedClient && cachedJwt === key) return cachedClient;
+  cachedClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     auth: { persistSession: false, autoRefreshToken: false },
-    global: jwt ? { headers: { Authorization: `Bearer ${jwt}` } } : {},
+    global: key ? { headers: { Authorization: `Bearer ${key}` } } : {},
   });
+  cachedJwt = key;
+  return cachedClient;
 }
 
 /** Gọi thẳng Edge Function — dùng chung cho mọi "type", tự bọc lỗi mạng. */
