@@ -155,17 +155,36 @@ window.addEventListener('DOMContentLoaded', async () => {
 // Chrome bình thường — đúng hiện tượng thấy thanh địa chỉ như đang mở Chrome.
 //
 // updateViaCache:'none': mỗi lần code cập nhật, tab ĐANG MỞ (không riêng gì lần mở mới) tự nhận
-// bản mới ở NỀN — không cần ai bấm F12/xóa cache tay. TRƯỚC ĐÂY tự location.reload() ngay khi có
-// bản mới kiểm soát trang — nghe hợp lý nhưng gây khó chịu THẬT: bản mới có thể tới bất cứ lúc nào,
-// kể cả đúng lúc đang gõ dở form (VD màn đăng nhập) -> bị tải lại NGANG XƯƠNG, mất hết dữ liệu vừa
-// gõ. Bỏ hẳn việc tự reload — có bản mới thì lần MỞ LẠI app tự nhiên kế tiếp (thoát/mở lại, hoặc F5)
-// sẽ tự dùng bản mới, khỏi cần ép reload ngay giữa lúc đang thao tác dở.
+// bản mới ở NỀN — không cần ai bấm F12/xóa cache tay. TRƯỚC ĐÂY tự location.reload() NGAY khi có
+// bản mới kiểm soát trang — gây khó chịu THẬT (mất dữ liệu đang gõ dở, xem bản sửa trước). Nhưng bỏ
+// HẲN việc báo gì cũng dở không kém: bản mới có kiểm soát trang xong thì CHỈ ảnh hưởng các REQUEST
+// MẠNG sau đó (VD gọi lại app.js) — CODE ĐANG CHẠY TRONG BỘ NHỚ của tab vẫn y hệt code CŨ cho tới
+// khi trang thật sự tải lại; đóng/mở lại 1 app "Thêm vào màn hình chính" (không tắt hẳn tiến trình)
+// nhiều khi KHÔNG tính là tải lại thật, người dùng dễ tưởng đã lấy bản mới nhưng thật ra chưa. Giờ
+// hiện 1 dải nhỏ có nút "Tải lại ngay" khi có bản mới — không TỰ ép ai, nhưng cũng không im lặng
+// hoàn toàn: người dùng chủ động bấm lúc tiện, không sợ bị mất dữ liệu đang thao tác dở.
 if ('serviceWorker' in navigator) {
+  const hadControllerAtLoad = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    // Lần "claim" ĐẦU TIÊN (mở app lần đầu, trước đó chưa có SW nào kiểm soát) cũng bắn ra sự kiện
+    // này nhưng KHÔNG phải "có bản mới" — chỉ báo khi ĐANG có 1 SW khác kiểm soát rồi mới đổi sang
+    // SW mới (đúng nghĩa "vừa cập nhật"), tránh hiện nhầm dải này ngay lần đầu cài đặt.
+    if (hadControllerAtLoad) showUpdateBanner();
+  });
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('service-worker.js', { updateViaCache: 'none' })
       .then((reg) => { reg.update().catch(() => {}); })
       .catch((e) => console.warn('Không đăng ký được service worker.', e));
   });
+}
+function showUpdateBanner() {
+  if (document.getElementById('update-banner')) return;
+  const el = document.createElement('div');
+  el.id = 'update-banner';
+  el.className = 'update-banner';
+  el.innerHTML = '<span>Đã có bản cập nhật mới.</span><button type="button" id="update-banner-btn">Tải lại ngay</button>';
+  document.body.appendChild(el);
+  el.querySelector('#update-banner-btn').addEventListener('click', () => location.reload());
 }
 
 // Mọi thay đổi dữ liệu (xóa/tạo/sửa...) đều gọi notify() và kích hoạt render
