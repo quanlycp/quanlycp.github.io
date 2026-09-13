@@ -300,6 +300,19 @@ export async function syncOutbox() {
       let error = null;
       try { ({ error } = await q); } catch (e) { error = e; }
       if (error) {
+        // INSERT bị từ chối do TRÙNG KHÓA CHÍNH (mã lỗi Postgres '23505') — `id` trong payload LUÔN
+        // do CHÍNH máy này tự sinh (genId(), xem addTransaction/addDebtCharge...), không phải giá trị
+        // ai khác có thể trùng ngẫu nhiên, nên chỉ có 1 khả năng: lần gửi TRƯỚC của ĐÚNG op này thật
+        // ra ĐÃ lên tới server thành công rồi — chỉ là phản hồi chưa kịp về tới máy để gỡ op này khỏi
+        // hàng đợi thì lỡ bị TẢI LẠI TRANG giữa chừng (op vẫn còn nguyên trong localStorage, syncOutbox()
+        // sau khi tải lại lại thử gửi tiếp y hệt lần nữa). Coi đây là ĐÃ XONG, không phải lỗi thật cần
+        // báo/giữ lại — tự bỏ qua, không tạo thêm dòng nào (INSERT thứ 2 chính là dòng bị từ chối này).
+        if (op.method === 'insert' && error.code === '23505') {
+          console.warn(`syncOutbox: bỏ qua lỗi trùng khóa chính trên bảng ${op.table} (id đã tồn tại) — dòng này chắc đã gửi thành công ở lần trước, coi như xong.`, op.payload?.id);
+          state.outbox.shift();
+          persist();
+          continue;
+        }
         op.attempts = (op.attempts || 0) + 1;
         if (!isNetworkError(error)) {
           // Lỗi THẬT (VD RLS từ chối, thiếu cột, sai kiểu dữ liệu...) — KHÔNG phải cứ retry là tự hết.
@@ -803,10 +816,21 @@ export async function addTransaction({ type, amount, categoryId, note, date, rec
     note: note || '', txn_date: date || new Date().toISOString().slice(0, 10),
     user_id: session.id, recurring_id: recurringId || null, created_at: createdAt,
   };
-  const { error } = await tryWrite(sb, 'transactions', 'insert', row);
-  if (error) throw new Error('Không lưu được giao dịch, thử lại sau.');
+  // GHI NGAY vào bộ nhớ/localStorage TRƯỚC khi thử gọi mạng (optimistic THẬT SỰ, không đợi await ở
+  // dưới xong mới thấy) — 2 lý do: (1) thấy ngay lập tức trên giao diện dù mạng đang chậm, khỏi tưởng
+  // nhầm "chưa thấy gì, chắc bị treo/lỗi" rồi lỡ tay bấm lại tạo trùng lặp; (2) lỡ TẢI LẠI TRANG giữa
+  // lúc đang chờ phản hồi mạng thì dữ liệu ĐÃ NẰM SẴN trong localStorage (persist() ngay dưới đây) —
+  // sau khi tải lại vẫn thấy y hệt giao dịch này (đang tự gửi tiếp ở nền qua outbox nếu cần), không
+  // biến mất, không cần nhập lại. Lỗi THẬT (không phải mất mạng) ở bước gọi mạng bên dưới thì rút lại
+  // đúng thay đổi vừa áp dụng rồi mới báo lỗi, không để lại dữ liệu sai/thừa trên máy.
   state.transactions.unshift(mapTransactionRow(row));
   notify();
+  const { error } = await tryWrite(sb, 'transactions', 'insert', row);
+  if (error) {
+    state.transactions = state.transactions.filter((t) => t.id !== row.id);
+    notify();
+    throw new Error('Không lưu được giao dịch, thử lại sau.');
+  }
 }
 /** Tìm dòng Công nợ (sổ nợ/sổ cho vay) ĐI KÈM 1 giao dịch cụ thể (tạo từ ô Mượn nợ/Trả nợ ở form
  * Thêm giao dịch, hoặc tick "đưa vào thu/chi" ở trang Công nợ) — dùng để đồng bộ 2 chiều: sửa/xóa

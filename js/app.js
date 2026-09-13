@@ -155,6 +155,21 @@ setInterval(() => {
   refreshSyncUI();
   if (S.pendingSyncCount() > 0) trySyncNow();
 }, 5000);
+// Cảnh báo TRƯỚC khi tải lại/đóng trang lúc CÒN VIỆC CHƯA ĐỒNG BỘ XONG — tải lại đúng lúc 1 lượt gửi
+// đang bay giữa đường (đã tới server, phản hồi chưa kịp về) sẽ khiến máy TƯỞNG NHẦM là chưa gửi (do
+// chưa kịp gỡ khỏi hàng đợi trước khi trang tải lại) rồi lỡ tay bấm ghi lại/nhập lại y hệt lần nữa ->
+// thành 2 dòng dữ liệu trùng lặp thật (2 id khác nhau, không phải lỗi tự sinh ra 2 dòng, mà do NGƯỜI
+// DÙNG tưởng nhầm chưa lưu nên nhập lại). Trình duyệt hiện hộp thoại xác nhận riêng của nó (không hiện
+// được câu chữ tùy ý ở hầu hết trình duyệt hiện đại) — chỉ cần có hộp thoại này là đủ để cản lại thao
+// tác tải lại/đóng trang TRONG VÔ Ý, còn cố tình bấm "Rời khỏi trang" vẫn được (dữ liệu VẪN AN TOÀN
+// trong outbox/localStorage, tự gửi tiếp bình thường sau khi tải lại — chỉ là nếu NGƯỜI DÙNG tự tay
+// nhập lại thêm 1 lần nữa thì đó là 2 dòng CỐ Ý, không phải lỗi app).
+window.addEventListener('beforeunload', (e) => {
+  if (S.pendingSyncCount() > 0) {
+    e.preventDefault();
+    e.returnValue = '';
+  }
+});
 
 window.addEventListener('DOMContentLoaded', async () => {
   root = document.getElementById('root');

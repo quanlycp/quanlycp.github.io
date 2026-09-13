@@ -769,6 +769,22 @@ phải chỉ đang chờ có mạng — VD dữ liệu bị từ chối, hoặc 
 dải này chuyển sang **màu đỏ** kèm mô tả lỗi cụ thể, để không còn "im lặng mãi" như trước — báo lại
 đúng nội dung dải đỏ đó nếu cần hỗ trợ.
 
+**Chống trùng lặp khi lỡ tải lại trang giữa lúc đang gửi** — 2 lớp bảo vệ:
+1. Giao dịch (`addTransaction`) ghi NGAY vào bộ nhớ/localStorage TRƯỚC khi thử gọi mạng (thay vì đợi
+   gọi mạng xong mới thấy) — thấy ngay trên giao diện dù mạng chậm, và lỡ tải lại trang giữa chừng vẫn
+   còn nguyên dữ liệu (đang tự gửi tiếp ở nền), không tưởng nhầm "mất/chưa lưu" rồi lỡ nhập lại.
+2. Có cảnh báo của trình duyệt trước khi tải lại/đóng trang lúc còn việc chưa đồng bộ xong (che chắn
+   thao tác tải lại NGOÀI Ý MUỐN đúng lúc 1 lượt gửi đang bay giữa đường).
+3. Lỡ vẫn có 1 lượt gửi TRÙNG (VD do (2) không cản được — 1 số trình duyệt di động bỏ qua cảnh
+   báo này, hoặc mất điện đột ngột): `syncOutbox()` tự nhận ra INSERT bị từ chối do **trùng khóa
+   chính** (id do chính máy tự sinh) là dấu hiệu "dòng NÀY đã gửi thành công ở lần trước rồi" (không
+   phải lỗi thật) — tự coi như xong, không giữ lại retry mãi (tránh dải "đang đồng bộ" bị kẹt vĩnh
+   viễn vì 1 lỗi lẽ ra không phải lỗi).
+
+Lưu ý: các lớp trên chỉ chặn việc CODE tự gửi trùng 1 dòng — không chặn được việc NGƯỜI DÙNG tự tay
+bấm ghi lại/nhập lại 1 khoản y hệt (2 dòng với 2 id khác nhau, đều hợp lệ) vì tưởng lần trước chưa lưu;
+xóa bớt dòng thừa trong trường hợp đó phải làm thủ công như xóa 1 giao dịch bình thường.
+
 **Phạm vi hiện tại** — các mục khác vẫn cần có mạng như trước (có thể bổ sung sau nếu cần):
 Danh mục, Ngân sách, Định kỳ, Tiết kiệm, Kế hoạch, Thông báo, Quản lý User, Cài đặt, và phía "Cho
 vay/Tôi nợ" (công nợ phải thu, không liên quan tới thành viên trong sổ).
