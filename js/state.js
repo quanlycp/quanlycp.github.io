@@ -138,17 +138,63 @@ function queueMirrorJob(job) {
   state.pendingMirrors.push({ id: genId('mirrorjob'), ...job });
   persist();
 }
-/** Xếp 1 việc mirror vào hàng đợi RỒI kích hoạt đồng bộ NGAY — dùng CHUNG đúng 1 đường cho cả lúc
- * online lẫn offline, thay vì tách riêng "thử ngay 1 lần, báo qua toast RIÊNG nếu lỗi" (online) với
- * "xếp hàng, tự làm khi có mạng" (offline) như trước. Lý do đổi: toast riêng cho lúc online rất dễ bị
- * bỏ lỡ (chỉ hiện ~2 giây, mất luôn dấu vết), trong khi hàng đợi chung đã có sẵn NGUYÊN 1 bộ máy đáng
- * tin cậy người dùng đang trực tiếp theo dõi. LUÔN gọi syncOutbox() ngay (không xét isOnline() —
- * không đáng tin cậy 100%, xem chú thích ở syncOutbox()) — nếu thật sự đang mất mạng thì bản thân lần
- * gọi mạng thật bên trong đó tự thất bại rồi giữ nguyên hàng đợi như thường, không tốn kém gì thêm.
- * Không await ở đây — chạy NỀN, khỏi chặn thao tác vừa làm. */
-function queueAndKickMirror(job) {
-  queueMirrorJob(job);
-  syncOutbox();
+/** Điền hộ 1 job mirror ('add'/'update'/'delete') NGAY, không qua hàng đợi — dùng CHUNG cho cả
+ * queueAndKickMirror() (thử trực tiếp lúc vừa ghi) lẫn processPendingMirrors() (thử lại job đã nằm
+ * sẵn trong hàng đợi), tránh lặp lại y hệt đoạn switch theo job.op ở 2 nơi. Trả về
+ * { status: 'ok' | 'network' | 'error' | 'gone', reason? } — 'gone' = dòng gốc bên Nợ chung đã bị xóa
+ * trong lúc job này còn chờ xử lý, không còn gì để mirror nữa (không phải lỗi cần báo). */
+async function runMirrorJob(job, session) {
+  try {
+    if (job.op === 'add') {
+      const creditor = getCreditor(job.creditorId);
+      const entry = state.debtEntries.find((x) => x.id === job.entryId);
+      if (!creditor || !entry) return { status: 'gone' };
+      return await performMirrorAdd(creditor, entry, { debtKind: job.debtKind, amount: job.amount, date: job.date, sbToken: session?.sbToken });
+    }
+    if (job.op === 'update') {
+      return await performMirrorUpdate(job.mirrorEntryId, { amount: job.amount, date: job.date, debtKind: job.debtKind, sbToken: session?.sbToken });
+    }
+    if (job.op === 'delete') {
+      return await performMirrorDelete(job.mirrorEntryId, session?.sbToken);
+    }
+    return { status: 'error' };
+  } catch (e) {
+    console.warn('runMirrorJob: lỗi không mong đợi:', e);
+    return { status: 'error' };
+  }
+}
+/** Điền hộ mirror — THỬ NGAY, không qua hàng đợi, khi ĐANG CHẮC CHẮN có mạng (navigator.onLine khác
+ * false) VÀ outbox chính không còn việc nào ĐANG HOẠT ĐỘNG (creditor/dòng sổ nợ chắc chắn đã có thật
+ * trên Supabase để lưu con trỏ mirror_* ngược lại — xem performMirrorAdd). Thành công thì tải lại
+ * NGAY "Người khác nợ tôi" (refreshReceivablesQuietly) — thấy cập nhật LIỀN, không qua hàng đợi/hẹn
+ * giờ nào cả, và KHÔNG BAO GIỜ hiện banner "đang đồng bộ" cho trường hợp bình thường này (có mạng,
+ * xong gần như ngay lập tức, không có gì đáng để báo).
+ *
+ * TRƯỚC ĐÂY hàm này LUÔN xếp vào hàng đợi trước rồi mới gọi syncOutbox() xử lý — kể cả lúc đang có
+ * mạng — khiến `state.pendingMirrors` tạm thời có 1 phần tử suốt khoảng thời gian gọi Edge Function
+ * (banner/hẹn giờ đọc thấy > 0 sẽ hiện "Đang đồng bộ 1 thay đổi..." dù chẳng có gì bất thường, đúng
+ * việc bị phàn nàn "có mạng thì tự úp lên luôn, cần gì báo"). Giờ chỉ THẬT SỰ xếp vào hàng đợi khi có
+ * lý do chính đáng (mất mạng, hoặc thử ngay bị lỗi) — xem 2 nhánh dưới.
+ *
+ * Mất mạng / còn việc khác đang dở / thử ngay bị lỗi -> xếp vào hàng đợi pendingMirrors, để
+ * processPendingMirrors() (gọi từ syncOutbox() — cũng CHỈ thật sự gọi mạng khi có mạng, xem đó) tự
+ * làm lại sau, không cần nhập tay. Không await ở đây khi gọi từ nơi khác — chạy NỀN, khỏi chặn thao
+ * tác vừa làm (bản thân hàm CÓ await bên trong để còn tự lưu kết quả/báo lỗi khi xong). */
+async function queueAndKickMirror(job) {
+  if (navigator.onLine === false || state.outbox.some((op) => !op.stuck)) { queueMirrorJob(job); syncOutbox(); return; }
+  const session = getSession();
+  const result = await runMirrorJob(job, session);
+  if (result.status === 'gone') { notify(); return; }
+  if (result.status === 'ok') { await refreshReceivablesQuietly(session?.sbToken); notify(); return; }
+  // Lỗi mạng (VD vừa rớt mạng đúng lúc thử) hoặc lỗi thật ngay lần thử đầu -> xếp vào hàng đợi, ĐÃ
+  // tính sẵn là 1 lần thử (attempts: 1) để processPendingMirrors() tự thử lại tiếp — KHÔNG tự gọi lại
+  // syncOutbox() ngay ở đây để thử lần 2 liền: (1) thừa, vừa thử xong 1 lần rồi; (2) syncOutbox() tự
+  // reset lastSyncIssue về null lúc bắt đầu chạy, gọi ngay sẽ xóa mất thông báo lỗi vừa định báo (nếu
+  // là lỗi thật) trước khi kịp hiện lên. Cứ để tự nhiên tới lượt sau xử lý — vẫn rất sớm vì đã có sẵn
+  // nhiều "cò" khác đang theo dõi pendingSyncCount() > 0 (hẹn giờ mỗi 5 giây, lần ghi khác, quay lại
+  // app...), không cần vội thêm ở đây.
+  queueMirrorJob({ ...job, attempts: 1 });
+  notify();
 }
 function applyMatch(query, match) {
   if (!match) return query;
@@ -158,11 +204,20 @@ function applyMatch(query, match) {
 /** Thử ghi thẳng lên Supabase (insert/update/delete). Mất mạng (hoặc lỗi rõ do mạng) -> tự xếp vào
  * outbox để gửi lại sau, coi như đã "lưu tạm" xong (KHÔNG throw) — nơi gọi vẫn cập nhật bộ nhớ/
  * localStorage của mình bình thường, chỉ là chưa lên tới Supabase. Lỗi THẬT thì trả lỗi để nơi gọi
- * tự throw như trước (không nên giấu lỗi thật vào hàng đợi, người dùng cần biết ngay). LUÔN thử gọi
- * mạng thật trước tiên — KHÔNG còn tự đoán qua isOnline() rồi bỏ qua bước thử (không đáng tin cậy
- * 100%, xem chú thích ở syncOutbox()); rõ ràng mất mạng thì bước thử này tự thất bại rất nhanh, không
- * đáng để đánh đổi lấy rủi ro đoán sai (queue oan 1 việc lẽ ra gửi được ngay lúc đang có mạng thật). */
+ * tự throw như trước (không nên giấu lỗi thật vào hàng đợi, người dùng cần biết ngay).
+ *
+ * CHẮC CHẮN đang mất mạng (navigator.onLine === false) -> xếp vào hàng đợi NGAY, KHÔNG thử gọi mạng
+ * trước nữa. TRƯỚC ĐÂY vẫn cứ thử gọi thật dù cờ báo mất mạng (lý do: cờ này không đáng tin cậy
+ * 100%) — nhưng qua trải nghiệm thực tế, việc này gây đúng 2 vấn đề: (1) mất thời gian chờ 1 lượt gọi
+ * mạng vô ích rồi mới chịu queue, cảm giác "vẫn cứ đồng bộ dù rõ ràng đang mất mạng"; (2) một số môi
+ * trường trả về lỗi KHÔNG phải TypeError chuẩn khi thật sự mất mạng (VD lỗi 5xx/timeout do proxy nội
+ * bộ chặn thay vì fetch() tự ném exception) khiến isNetworkError() nhận nhầm thành lỗi THẬT, hiện đỏ
+ * oan ngay lúc KHÔNG có mạng. Bỏ qua bước thử này khi cờ đã nói rõ "mất mạng" giải quyết dứt điểm cả
+ * 2 — không cần đoán đúng/sai lỗi trả về nữa vì không hề gọi mạng. Vẫn KHÔNG chặn theo cờ này khi nó
+ * báo "true" (có thể sai chiều ngược lại) — chỉ chặn khi báo rõ false, trường hợp DUY NHẤT gần như
+ * luôn đúng trên mọi trình duyệt. */
 async function tryWrite(sb, table, method, payload, match) {
+  if (navigator.onLine === false) { queueWrite(table, method, payload, match); return { queued: true, error: null }; }
   try {
     let q = sb.from(table);
     if (method === 'insert') q = q.insert(payload);
@@ -215,12 +270,15 @@ export async function syncOutbox() {
   // innerHTML = ... trong renderLogin) TỪ ĐẦU mỗi vài giây — đúng lúc người dùng đang gõ dở tên đăng
   // nhập/mật khẩu thì bị "tải lại" xóa sạch input, y hệt phàn nàn "nhập gần xong bị tải lại mất dữ liệu".
   if (!getSession()) return;
-  // KHÔNG còn chặn theo isOnline() ở đây nữa — navigator.onLine không phải lúc nào cũng đáng tin cậy
-  // 100% (khác nhau tùy trình duyệt/cách mô phỏng mất mạng lúc test, có lúc báo sai cả 2 chiều: báo
-  // "còn mạng" dù đang thật sự mất, hoặc ngược lại) — lỡ báo sai đúng lúc CÓ mạng lại thật thì hàm này
-  // bị chặn mãi mãi, không bao giờ thử lại được nữa dù mạng đã có. Giờ cứ THỬ THẲNG, để chính kết quả
-  // gọi Supabase thật (thành công/lỗi mạng/lỗi thật) quyết định, không dựa vào 1 cờ trạng thái có thể
-  // sai của trình duyệt.
+  // CHẮC CHẮN đang mất mạng (cờ báo rõ false) -> ĐỪNG thử gọi mạng — chỉ đơn giản chưa đến lượt, để
+  // dành cho lần gọi kế tiếp do CHÍNH sự kiện 'online' của trình duyệt kích hoạt (xem app.js) — đúng
+  // yêu cầu "chỉ đồng bộ khi bật lại mạng", thay vì cứ mỗi vài giây lại thử gọi thật (dù biết chắc sẽ
+  // fail) rồi phải phân loại lỗi trả về là "mất mạng" hay "lỗi thật" (dễ đoán nhầm ở 1 số môi trường,
+  // hiện đỏ oan). CHỈ chặn khi cờ nói "false" — không chặn khi nó nói "true" (chiều này có thể sai,
+  // nhưng cứ thử thật vẫn không sao, tự queue lại bình thường nếu quả thật vẫn chưa có mạng) — nên
+  // KHÔNG lo bị kẹt cứng vĩnh viễn nếu chỉ có chiều "true" bị sai: hễ có mạng thật là sự kiện 'online'
+  // sẽ tự bắn ra đưa cờ về true, gọi lại hàm này ngay.
+  if (navigator.onLine === false) return;
   if (syncingOutbox || (!state.outbox.length && !(state.pendingMirrors || []).length)) return;
   syncingOutbox = true;
   lastSyncIssue = null; // để mỗi lần thử lại đều đánh giá lại từ đầu, không giữ mãi thông báo lỗi cũ nếu đã hết lỗi
@@ -1259,33 +1317,19 @@ const MIRROR_JOB_MAX_ATTEMPTS = 6;
  * chính đã trống hẳn (creditor/dòng sổ nợ chắc chắn đã có thật trên Supabase để lưu con trỏ mirror_*
  * ngược lại). Gặp lỗi MẠNG thì dừng lại NGAY, giữ nguyên hàng đợi để thử lại lần sau. */
 async function processPendingMirrors() {
-  // Không còn chặn theo isOnline() — xem giải thích ở syncOutbox() (chỗ gọi hàm này).
   if (!Array.isArray(state.pendingMirrors) || !state.pendingMirrors.length) return;
+  // CHẮC CHẮN đang mất mạng (cờ báo rõ) -> đừng thử gì cả, để dành lần gọi sau (sự kiện 'online',
+  // xem giải thích đầy đủ ở syncOutbox() — chỗ gọi hàm này).
+  if (navigator.onLine === false) return;
   const session = getSession();
   let anySucceeded = false;
   while (state.pendingMirrors.length) {
     const job = state.pendingMirrors[0];
-    let result;
-    try {
-      if (job.op === 'add') {
-        const creditor = getCreditor(job.creditorId);
-        const entry = state.debtEntries.find((x) => x.id === job.entryId);
-        // Dòng gốc đã bị xóa trong lúc job này còn chờ trong hàng đợi (deleteDebtEntry đã tự hủy job
-        // 'add' tương ứng — nhánh này chỉ để phòng hờ) -> không còn gì để mirror, bỏ qua hẳn (không
-        // phải lỗi cần báo, dòng gốc không còn tồn tại nữa).
-        if (!creditor || !entry) { state.pendingMirrors.shift(); persist(); continue; }
-        result = await performMirrorAdd(creditor, entry, { debtKind: job.debtKind, amount: job.amount, date: job.date, sbToken: session?.sbToken });
-      } else if (job.op === 'update') {
-        result = await performMirrorUpdate(job.mirrorEntryId, { amount: job.amount, date: job.date, debtKind: job.debtKind, sbToken: session?.sbToken });
-      } else if (job.op === 'delete') {
-        result = await performMirrorDelete(job.mirrorEntryId, session?.sbToken);
-      } else {
-        result = { status: 'error' };
-      }
-    } catch (e) {
-      console.warn('processPendingMirrors: lỗi không mong đợi:', e);
-      result = { status: 'error' };
-    }
+    const result = await runMirrorJob(job, session);
+    // Dòng gốc đã bị xóa trong lúc job này còn chờ trong hàng đợi (deleteDebtEntry đã tự hủy job
+    // 'add' tương ứng — nhánh này chỉ để phòng hờ) -> không còn gì để mirror, bỏ qua hẳn (không phải
+    // lỗi cần báo, dòng gốc không còn tồn tại nữa).
+    if (result.status === 'gone') { state.pendingMirrors.shift(); persist(); continue; }
     if (result.status === 'ok') { state.pendingMirrors.shift(); persist(); anySucceeded = true; continue; }
     // TÍNH số lần thử cho CẢ 'network' lẫn 'error' — 1 lỗi mạng "giả" (VD CORS bị chặn cấu hình sai,
     // trình duyệt báo y hệt lỗi mất mạng thật, KHÔNG cách nào phân biệt được) mà cứ mãi coi là "chờ có

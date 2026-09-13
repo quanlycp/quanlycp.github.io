@@ -140,24 +140,16 @@ window.addEventListener('online', trySyncNow);
 window.addEventListener('offline', () => { if (root) updateSyncBanner(S.pendingSyncCount(), S.getSyncIssue()); });
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') trySyncNow(); });
 window.addEventListener('focus', trySyncNow);
-// Hẹn giờ dưới đây có 2 việc TÁCH RIÊNG nhau:
-// 1. Cập nhật lại banner mỗi 5 giây (rẻ, chỉ đọc navigator.onLine + vẽ lại DOM, không gọi mạng) — LUÔN
-//    làm, bất kể có gì để đồng bộ hay không, để không rơi vào lỗi cũ đã sửa: dải "Đang mất mạng" đứng
-//    yên mãi vì không có gì khiến nó tự vẽ lại.
-// 2. THỬ GỌI MẠNG (trySyncNow) — CÓ xét navigator.onLine trước ở đây, vì gọi mỗi 5 giây dù RÕ RÀNG
-//    đang mất mạng (cờ báo false) là vô ích/gây cảm giác "lúc nào cũng đồng bộ" dù biết chắc không có
-//    mạng. Không lo bị kẹt cứng như trước vì CÒN NHIỀU đường KHÁC gọi trySyncNow() KHÔNG xét cờ này:
-//    - 'online': bắn ra ngay lúc mạng thật sự có lại — đường CHÍNH để phát hiện.
-//    - focus/visibilitychange: mở lại app — cũng không xét cờ, thử lại ngay lúc quay lại app.
-//    - hẹn giờ AN TOÀN bên dưới (60 giây, KHÔNG xét cờ) — phòng hờ cả 3 đường trên đều không bắn ra
-//      (cờ bị kẹt báo sai mãi) thì vẫn tự sửa lại được, chỉ là chậm hơn (tối đa 1 phút) thay vì mỗi
-//      5 giây — cân bằng giữa "không ngu ngốc cứ thử hoài lúc rõ ràng mất mạng" và "không bao giờ bị
-//      kẹt cứng nếu cờ báo sai".
+// CHẶN việc gọi mạng khi CHẮC CHẮN đang mất mạng giờ nằm NGAY BÊN TRONG S.syncOutbox() (xem state.js)
+// — nơi duy nhất thật sự gọi Supabase — nên ở đây gọi trySyncNow() lúc nào cũng AN TOÀN/RẺ: nếu đang
+// mất mạng, syncOutbox() tự trả về ngay lập tức, không gọi mạng, không đổi gì cả. Nhờ vậy hẹn giờ dưới
+// đây có thể gọi ĐỀU ĐẶN mỗi 5 giây mà KHÔNG còn "tự đồng bộ dù biết đang mất mạng" như trước (khi
+// việc chặn còn nằm rải rác ở đây) — chỉ đơn giản là 1 lượt kiểm tra rẻ, cập nhật banner + thử đồng bộ
+// nếu còn việc chờ; có mạng thật thì tự đi qua, mất mạng thì tự no-op, không hiện lỗi gì cả.
 setInterval(() => {
   if (root) updateSyncBanner(S.pendingSyncCount(), S.getSyncIssue());
-  if (navigator.onLine !== false && S.pendingSyncCount() > 0) trySyncNow();
+  if (S.pendingSyncCount() > 0) trySyncNow();
 }, 5000);
-setInterval(() => { if (S.pendingSyncCount() > 0) trySyncNow(); }, 60000);
 
 window.addEventListener('DOMContentLoaded', async () => {
   root = document.getElementById('root');

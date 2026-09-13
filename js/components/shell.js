@@ -65,10 +65,11 @@ export function buildShell(root, isOwner) {
  * lỗi THẬT gặp phải lúc đồng bộ — ưu tiên hiện lỗi này lên trước, kèm màu đỏ, để không còn "im lặng"
  * như trước (xem state.js).
  *
- * KHÔNG còn dùng navigator.onLine để đoán/nói "đang mất mạng" nữa — cờ này không đáng tin cậy 100%
- * (khác nhau tùy trình duyệt/cách mô phỏng mất mạng lúc test), lỡ nói sai "đang mất mạng" trong khi
- * THẬT RA đang có mạng (đúng lỗi người dùng gặp phải) sẽ khiến người dùng tưởng nhầm là máy mình mất
- * mạng dù không phải. Giờ chỉ nói đúng những gì CHẮC CHẮN biết: có N việc đang chờ lên máy chủ. */
+ * Có dùng navigator.onLine, nhưng CHỈ để CHỌN CÂU CHỮ hiển thị (không dùng để quyết định hiện/ẩn hay
+ * để chặn việc thử đồng bộ — việc đó nằm hẳn trong state.js rồi) — lỡ cờ này báo sai cũng chỉ lệch
+ * đúng 1 câu chữ, không ảnh hưởng gì tới việc dữ liệu có lên được máy chủ hay không. Phân biệt: đang
+ * mất mạng thì nói rõ "đang chờ có mạng" (không có gì đang chạy cả, đúng thực tế); có mạng mà vẫn còn
+ * việc chưa xong thì mới nói "đang đồng bộ" (thật sự đang có 1 lượt gọi mạng diễn ra). */
 export function updateSyncBanner(pendingCount, syncIssue) {
   const el = document.getElementById('sync-banner');
   if (!el) return;
@@ -77,6 +78,8 @@ export function updateSyncBanner(pendingCount, syncIssue) {
   el.classList.toggle('sync-banner-error', !!syncIssue);
   if (syncIssue) {
     el.textContent = syncIssue.message;
+  } else if (navigator.onLine === false) {
+    el.textContent = `Còn ${pendingCount} thay đổi chưa gửi lên máy chủ — đang chờ có mạng...`;
   } else {
     el.textContent = `Đang đồng bộ ${pendingCount} thay đổi lên máy chủ...`;
   }
