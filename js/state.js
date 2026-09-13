@@ -88,10 +88,15 @@ function isOnline() {
   return typeof navigator === 'undefined' || navigator.onLine !== false;
 }
 /** Lỗi có phải do MẠNG không — để phân biệt với lỗi THẬT (dữ liệu sai, bị chặn quyền...): lỗi mạng
- * thì xếp hàng đợi gửi lại sau, lỗi thật thì phải báo ngay, không nên giấu vào hàng đợi. */
+ * thì xếp hàng đợi gửi lại sau, lỗi thật thì phải báo ngay, không nên giấu vào hàng đợi. CHỈ xét đúng
+ * nội dung thông báo lỗi — KHÔNG còn cộng thêm `!isOnline()` như trước: navigator.onLine không phải
+ * lúc nào cũng đáng tin (khác nhau tùy trình duyệt/cách mô phỏng mất mạng lúc test) — lỡ nó báo sai
+ * "đang online" ngay lúc CÓ 1 lỗi mạng thật xảy ra thì lỗi đó bị tính nhầm thành "lỗi thật", báo đỏ
+ * oan thay vì tự xếp hàng thử lại; ngược lại nếu báo sai "đang offline" thì MỌI lỗi (kể cả lỗi thật
+ * cần báo ngay) đều bị giấu vào hàng đợi. Chỉ dựa vào đúng nội dung lỗi trình duyệt thật sự trả về. */
 function isNetworkError(error) {
   const msg = ((error && error.message) || '').toLowerCase();
-  return !isOnline() || msg.includes('failed to fetch') || msg.includes('load failed') || msg.includes('network') || msg.includes('econn');
+  return msg.includes('failed to fetch') || msg.includes('load failed') || msg.includes('network') || msg.includes('econn');
 }
 function queueWrite(table, method, payload, match) {
   if (!Array.isArray(state.outbox)) state.outbox = []; // phòng hờ dữ liệu cache cũ/lỗi thiếu field này
@@ -180,7 +185,13 @@ export async function syncOutbox() {
   // innerHTML = ... trong renderLogin) TỪ ĐẦU mỗi vài giây — đúng lúc người dùng đang gõ dở tên đăng
   // nhập/mật khẩu thì bị "tải lại" xóa sạch input, y hệt phàn nàn "nhập gần xong bị tải lại mất dữ liệu".
   if (!getSession()) return;
-  if (syncingOutbox || !isOnline() || (!state.outbox.length && !(state.pendingMirrors || []).length)) return;
+  // KHÔNG còn chặn theo isOnline() ở đây nữa — navigator.onLine không phải lúc nào cũng đáng tin cậy
+  // 100% (khác nhau tùy trình duyệt/cách mô phỏng mất mạng lúc test, có lúc báo sai cả 2 chiều: báo
+  // "còn mạng" dù đang thật sự mất, hoặc ngược lại) — lỡ báo sai đúng lúc CÓ mạng lại thật thì hàm này
+  // bị chặn mãi mãi, không bao giờ thử lại được nữa dù mạng đã có. Giờ cứ THỬ THẲNG, để chính kết quả
+  // gọi Supabase thật (thành công/lỗi mạng/lỗi thật) quyết định, không dựa vào 1 cờ trạng thái có thể
+  // sai của trình duyệt.
+  if (syncingOutbox || (!state.outbox.length && !(state.pendingMirrors || []).length)) return;
   syncingOutbox = true;
   lastSyncIssue = null; // để mỗi lần thử lại đều đánh giá lại từ đầu, không giữ mãi thông báo lỗi cũ nếu đã hết lỗi
   try {
@@ -1183,7 +1194,8 @@ const MIRROR_JOB_MAX_ATTEMPTS = 6;
  * chính đã trống hẳn (creditor/dòng sổ nợ chắc chắn đã có thật trên Supabase để lưu con trỏ mirror_*
  * ngược lại). Gặp lỗi MẠNG thì dừng lại NGAY, giữ nguyên hàng đợi để thử lại lần sau. */
 async function processPendingMirrors() {
-  if (!Array.isArray(state.pendingMirrors) || !state.pendingMirrors.length || !isOnline()) return;
+  // Không còn chặn theo isOnline() — xem giải thích ở syncOutbox() (chỗ gọi hàm này).
+  if (!Array.isArray(state.pendingMirrors) || !state.pendingMirrors.length) return;
   const session = getSession();
   while (state.pendingMirrors.length) {
     const job = state.pendingMirrors[0];
