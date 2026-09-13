@@ -115,10 +115,12 @@ export function openTransactionForm({ transaction, defaultType = 'expense', onSa
           // trên (xem S.addDebtCharge/addDebtPayment) — chờ riêng ở đây rồi mới báo nếu nó thất bại,
           // đừng để im lặng tưởng nhầm app lỗi khác. Form đã đóng nên toast này có thể hiện trễ hơn
           // 1 chút sau khi người dùng đã rời màn — không sao, toast không phụ thuộc form còn mở hay không.
+          // Mất mạng lúc này KHÔNG còn là thất bại hẳn — bước điền hộ tự xếp hàng và tự làm lại khi có
+          // mạng (xem state.pendingMirrors/processPendingMirrors trong state.js), chỉ báo cho biết.
           if (mirrorResult?.mirrorPromise) {
             mirrorResult.mirrorPromise.then((r) => {
               if (r?.offline) {
-                toast('Đang mất mạng — đã ghi vào Nợ chung, sẽ tự điền sang sổ riêng của thành viên đó khi có mạng lại (cần thêm/sửa lại lúc đó).', 'error');
+                toast('Đang mất mạng — đã ghi vào Nợ chung, sẽ TỰ điền sang sổ riêng của thành viên đó khi có mạng lại, không cần làm tay.', 'default');
               } else if (r?.mirrorFailed) {
                 toast('Đã ghi vào Nợ chung, nhưng CHƯA điền/đồng bộ được vào sổ riêng của thành viên đó — kiểm tra lại đã chạy đủ SQL/deploy Edge Function mới chưa (xem docs mục 13).', 'error');
               }
