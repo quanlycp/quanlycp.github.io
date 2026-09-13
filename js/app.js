@@ -1,5 +1,5 @@
 import * as S from './state.js';
-import { buildShell, updateActiveNav } from './components/shell.js';
+import { buildShell, updateActiveNav, updateSyncBanner } from './components/shell.js';
 import { closeAllModals } from './components/modal.js';
 import { renderLogin } from './views/login.js';
 import { renderChangePassword } from './views/changePassword.js';
@@ -91,6 +91,7 @@ function renderApp({ scrollTop = true } = {}) {
   if (match.view.renderHeader) match.view.renderHeader(headerEl);
   match.view.render(contentEl, filterEl, query);
   updateActiveNav(path);
+  updateSyncBanner(S.pendingSyncCount());
 }
 
 window.addEventListener('hashchange', () => {
@@ -104,6 +105,22 @@ window.addEventListener('hashchange', () => {
   if (splitHash().path === '#/no') S.refresh();
 });
 window.addEventListener('qtd:logout', () => { closeAllModals(); S.logout(); location.hash = '#/'; renderApp(); });
+
+// Có mạng trở lại (sau khi mất mạng) -> tự đẩy các thay đổi đã ghi tạm lúc
+// offline (outbox trong state.js) lên máy chủ ngay, khỏi cần đợi thao tác kế
+// tiếp mới nhận ra là đã có mạng. Sự kiện 'online' của trình duyệt đôi khi
+// không bắn ra (tùy thiết bị/mạng) nên có thêm hẹn giờ kiểm tra định kỳ ở
+// dưới làm phương án dự phòng.
+window.addEventListener('online', () => {
+  S.syncOutbox();
+  if (root) updateSyncBanner(S.pendingSyncCount());
+});
+window.addEventListener('offline', () => {
+  if (root) updateSyncBanner(S.pendingSyncCount());
+});
+setInterval(() => {
+  if (navigator.onLine !== false && S.pendingSyncCount() > 0) S.syncOutbox();
+}, 20000);
 
 window.addEventListener('DOMContentLoaded', async () => {
   root = document.getElementById('root');

@@ -44,6 +44,10 @@ Web app quản lý chi tiêu & kế hoạch ngân sách hàng tháng cho gia đ�
 - **Thông báo**: bật Thông báo đẩy (Web Push) trên từng thiết bị, soạn & gửi ngay 1 thông báo cho
   1 người khác/tất cả mọi người/chính mình, hoặc đặt **lịch nhắc** tới đúng ngày giờ mới tự động
   gửi — nhận được cả khi không mở app (cần cấu hình thêm, xem `docs/expense-app-setup.md` mục 10).
+- **Dùng được khi mất mạng (offline)**: vào app và ghi **Giao dịch**, **Mượn nợ/Trả nợ/Công nợ**
+  bình thường kể cả khi không có mạng — có mạng lại app tự đồng bộ, giữ đúng thời điểm thao tác thật
+  (không phải lúc có mạng lại), nhiều tài khoản cùng ghi lúc mất mạng vẫn đồng bộ đầy đủ. Có dải màu
+  vàng báo khi đang mất mạng/còn thay đổi chưa đồng bộ (xem `docs/expense-app-setup.md` mục 15).
 
 ## Chạy thử
 

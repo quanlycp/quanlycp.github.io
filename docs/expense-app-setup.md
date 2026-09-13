@@ -723,7 +723,45 @@ RLS như các trang khác.
 - [ ] Vào **Nhật ký** (chỉ chủ sổ thấy) kiểm tra thử — thêm/sửa/xóa 1 giao dịch bất kỳ rồi xem có
       hiện đúng dòng mới trong Nhật ký không.
 
-## 15. Việc còn lại
+## 15. Dùng được khi mất mạng (offline)
+
+App giờ vào được và GHI được dữ liệu bình thường khi điện thoại/máy tính KHÔNG có mạng — cụ thể là
+**Giao dịch** (thêm/sửa/xóa) và **Mượn nợ / Trả nợ / Công nợ** (phần dùng nhiều nhất). Có mạng lại,
+app tự động gửi hết các thay đổi đã ghi tạm lên máy chủ, người khác sẽ thấy như bình thường — ĐÚNG
+thời điểm lúc thao tác thật (lúc đang mất mạng), không phải thời điểm có mạng lại. Nhiều tài khoản
+cùng ghi lúc mất mạng ở nhiều máy khác nhau vẫn tự đồng bộ đầy đủ khi mỗi máy có mạng lại, không cần
+máy nào biết máy nào (mỗi máy có "hàng đợi" riêng trong bộ nhớ máy đó).
+
+**KHÔNG cần chạy SQL hay deploy lại Edge Function cho mục này** — đây là thay đổi thuần phía app
+(trình duyệt), không đụng tới cấu trúc dữ liệu trên Supabase.
+
+Kỹ thuật (tóm tắt, xem thêm chú thích trong `js/state.js`): mỗi thao tác ghi vẫn lưu ngay vào bộ nhớ
+máy (dùng được liền); nếu lúc đó không gửi lên Supabase được (mất mạng/lỗi mạng), việc gửi được xếp
+vào 1 "hàng đợi" (outbox) cũng lưu trong bộ nhớ máy — có mạng lại (bắt sự kiện `online`, có kiểm tra
+định kỳ dự phòng mỗi 20 giây, và mỗi lần `refresh()`), app tự gửi hết hàng đợi theo đúng thứ tự đã
+ghi. `service-worker.js` cũng được sửa để lưu sẵn "vỏ" app (giao diện) vào bộ nhớ đệm của trình
+duyệt, cho phép MỞ được app ngay cả khi mất mạng ngay từ đầu (không chỉ khi tab đang mở sẵn từ
+trước) — có mạng vẫn luôn ưu tiên lấy bản mới nhất như trước, không sợ bị kẹt xem bản cũ.
+
+Có 1 dải màu vàng phía trên đầu trang khi đang mất mạng hoặc còn thay đổi chưa đồng bộ, để biết ngay
+là dữ liệu chưa lên tới máy chủ, tránh tưởng nhầm là mất dữ liệu.
+
+**Phạm vi hiện tại** — các mục khác vẫn cần có mạng như trước (có thể bổ sung sau nếu cần):
+Danh mục, Ngân sách, Định kỳ, Tiết kiệm, Kế hoạch, Thông báo, Quản lý User, Cài đặt, và phía "Cho
+vay/Tôi nợ" (công nợ phải thu, không liên quan tới thành viên trong sổ).
+
+**Lưu ý riêng 1 điểm**: nếu lúc mất mạng bạn chọn 1 THÀNH VIÊN làm người cho mượn ở mục Mượn nợ (để
+tự điền sang "Người khác nợ tôi" của họ, xem mục 13), bước tự điền hộ này KHÔNG tự chạy lại khi
+đồng bộ — vì đây là gọi Edge Function (cần mạng ngay lúc đó), không phải ghi bảng thường. Giao dịch/
+Nợ chung vẫn lên đúng và ai cũng thấy được sau khi đồng bộ, chỉ riêng phần tự điền hộ vào sổ riêng
+của thành viên đó thì cần làm lại (hoặc nhắc họ tự thêm) sau khi có mạng.
+
+### 15.1 Việc còn lại cho mục này
+
+- [ ] Thử tắt mạng (chế độ máy bay), mở lại app, thêm 1-2 giao dịch/mượn nợ, xong bật mạng lại — kiểm
+      tra dải màu vàng biến mất và dữ liệu đã lên đúng trên tài khoản khác.
+
+## 16. Việc còn lại
 
 - [ ] Đổi mật khẩu owner ngay sau lần đăng nhập đầu tiên (app tự bắt đổi).
 - [ ] Rà soát dữ liệu chi tiêu thật trước khi coi là "đang dùng thật".
@@ -732,3 +770,4 @@ RLS như các trang khác.
 - [ ] (Tùy chọn) Làm theo mục 12 nếu muốn Mượn/Trả nợ ngay từ Giao dịch + Nợ chung.
 - [ ] (Tùy chọn) Làm theo mục 13 nếu muốn tự điền hộ Mượn nợ sang sổ riêng của thành viên + đổi tên hiển thị.
 - [ ] (Tùy chọn) Làm theo mục 14 nếu muốn có Nhật ký hoạt động (audit log).
+- [ ] (Tùy chọn) Xem mục 15 để hiểu app dùng offline như thế nào (không cần làm gì thêm, đã bật sẵn).
