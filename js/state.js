@@ -85,15 +85,37 @@ function emptyState() {
 // User, Cài đặt) vẫn cần có mạng như trước, có thể bổ sung sau nếu cần.
 // ------------------------------------------------------------
 /** Lỗi có phải do MẠNG không — để phân biệt với lỗi THẬT (dữ liệu sai, bị chặn quyền...): lỗi mạng
- * thì xếp hàng đợi gửi lại sau, lỗi thật thì phải báo ngay, không nên giấu vào hàng đợi. CHỈ xét đúng
- * nội dung thông báo lỗi — KHÔNG còn cộng thêm `!isOnline()` như trước: navigator.onLine không phải
- * lúc nào cũng đáng tin (khác nhau tùy trình duyệt/cách mô phỏng mất mạng lúc test) — lỡ nó báo sai
- * "đang online" ngay lúc CÓ 1 lỗi mạng thật xảy ra thì lỗi đó bị tính nhầm thành "lỗi thật", báo đỏ
- * oan thay vì tự xếp hàng thử lại; ngược lại nếu báo sai "đang offline" thì MỌI lỗi (kể cả lỗi thật
- * cần báo ngay) đều bị giấu vào hàng đợi. Chỉ dựa vào đúng nội dung lỗi trình duyệt thật sự trả về. */
+ * thì xếp hàng đợi gửi lại sau, lỗi thật thì phải báo ngay, không nên giấu vào hàng đợi.
+ *
+ * TRƯỚC ĐÂY chỉ dò theo TỪNG CHỮ cụ thể trong error.message (VD "failed to fetch") — cách này DỄ VỠ:
+ * mỗi trình duyệt/hệ điều hành lại dùng đúng 1 câu chữ khác nhau cho lỗi mạng, chỉ cần thiếu 1 câu là
+ * bị tính NHẦM thành "lỗi thật" (hiện đỏ oan ngay cả lúc đang mất mạng thật, đúng lỗi vừa báo). Giờ
+ * dựa vào ĐÚNG BẢN CHẤT lỗi thay vì đoán câu chữ:
+ * - Postgrest/Supabase trả lỗi THẬT (RLS từ chối, sai kiểu dữ liệu, vi phạm ràng buộc...) LUÔN kèm
+ *   `code` (mã lỗi Postgres, VD '23505', '42501'...) — có `code` thì CHẮC CHẮN là lỗi thật, không
+ *   phải lỗi mạng, bất kể message ghi gì.
+ * - Lỗi Ở TẦNG MẠNG (mất mạng, DNS, timeout, CORS bị chặn...) do chính fetch() ném ra LUÔN là
+ *   TypeError theo đúng chuẩn Fetch API — không phụ thuộc trình duyệt/hệ điều hành/message cụ thể.
+ * Chỉ khi cả 2 cách trên đều không xác định được mới quay lại dò vài từ khóa quen thuộc làm phương án
+ * dự phòng cuối cùng. */
 function isNetworkError(error) {
-  const msg = ((error && error.message) || '').toLowerCase();
-  return msg.includes('failed to fetch') || msg.includes('load failed') || msg.includes('network') || msg.includes('econn');
+  if (!error) return false;
+  if (error.code) return false; // có mã lỗi Postgres -> chắc chắn lỗi thật, không phải lỗi mạng.
+  if (error.name === 'TypeError') return true; // mọi lỗi cấp mạng của fetch() đều là TypeError.
+  const msg = ((error.message) || '').toLowerCase();
+  return msg.includes('failed to fetch') || msg.includes('load failed') || msg.includes('network') || msg.includes('econn') || msg.includes('timeout') || msg.includes('abort');
+}
+/** Gộp đủ thông tin 1 lỗi Postgrest/Supabase trả về (message + code + details + hint, nếu có) thành
+ * 1 chuỗi để hiện lên banner/console — trước đây chỉ hiện mỗi `message` (thường chỉ 1 câu chung
+ * chung như "new row violates row-level security policy"), thiếu hẳn `code`/`details`/`hint` vốn là
+ * phần MANG NHIỀU THÔNG TIN CHẨN ĐOÁN NHẤT (VD `hint` hay nêu thẳng tên cột/ràng buộc liên quan). */
+function describeError(error) {
+  if (!error) return 'không rõ lỗi';
+  const parts = [error.message || String(error)];
+  if (error.code) parts.push(`mã: ${error.code}`);
+  if (error.details) parts.push(`chi tiết: ${error.details}`);
+  if (error.hint) parts.push(`gợi ý: ${error.hint}`);
+  return parts.join(' — ');
 }
 function queueWrite(table, method, payload, match) {
   if (!Array.isArray(state.outbox)) state.outbox = []; // phòng hờ dữ liệu cache cũ/lỗi thiếu field này
@@ -159,8 +181,16 @@ async function tryWrite(sb, table, method, payload, match) {
   }
 }
 /** Số việc đang chờ đồng bộ — hiện lên giao diện (xem components/shell.js) để người dùng biết đang
- * có thay đổi CHƯA lên tới Supabase, tránh tưởng nhầm là mất dữ liệu hoặc app bị lỗi. */
-export function pendingSyncCount() { return state.outbox.length + (state.pendingMirrors ? state.pendingMirrors.length : 0); }
+ * có thay đổi CHƯA lên tới Supabase, tránh tưởng nhầm là mất dữ liệu hoặc app bị lỗi. KHÔNG đếm các
+ * item đã bị đánh dấu `stuck` (lỗi THẬT lặp đi lặp lại nhiều lần, xem syncOutbox()) — 1 item như vậy
+ * không còn ở trạng thái "đang chờ đồng bộ bình thường" nữa mà là "cần xem lại thủ công", nếu vẫn đếm
+ * chung vào đây thì banner/toast "đã đồng bộ xong" cho MỌI việc khác (không liên quan) sẽ KHÔNG BAO
+ * GIỜ hiện được — item đó vẫn được tự thử lại ở nền (phòng khi lỗi được sửa sau), chỉ là không tính
+ * vào con số này nữa; lỗi của nó vẫn hiện riêng qua getSyncIssue() (banner đỏ). */
+export function pendingSyncCount() {
+  const activeOutbox = state.outbox.filter((op) => !op.stuck).length;
+  return activeOutbox + (state.pendingMirrors ? state.pendingMirrors.length : 0);
+}
 
 // Lỗi THẬT (không phải do mất mạng) gặp phải lúc đồng bộ hàng đợi — trước đây gặp lỗi này chỉ
 // console.warn() rồi ÂM THẦM giữ nguyên item đó ở ĐẦU hàng đợi mãi mãi (thử lại y hệt input cũ ở mỗi
@@ -215,13 +245,18 @@ export async function syncOutbox() {
         op.attempts = (op.attempts || 0) + 1;
         if (!isNetworkError(error)) {
           // Lỗi THẬT (VD RLS từ chối, thiếu cột, sai kiểu dữ liệu...) — KHÔNG phải cứ retry là tự hết.
-          console.warn(`syncOutbox: lỗi THẬT (không phải mất mạng) trên bảng ${op.table}:`, error.message || error);
-          lastSyncIssue = { message: `Lỗi đồng bộ (bảng ${op.table}): ${error.message || error}` };
+          console.warn(`syncOutbox: lỗi THẬT (không phải mất mạng) trên bảng ${op.table}:`, error);
+          lastSyncIssue = { message: `Lỗi đồng bộ (bảng ${op.table}): ${describeError(error)}` };
+          if (op.attempts >= STUCK_RETRY_WARN_AFTER) {
+            // Đã thử vài lần vẫn y hệt lỗi này — đánh dấu `stuck` để pendingSyncCount() (và banner/
+            // toast "đã đồng bộ xong") không còn tính item này nữa, tránh việc 1 dòng không sửa được
+            // ngay chặn đứng thông báo "xong" của MỌI thao tác khác không liên quan mãi mãi — vẫn giữ
+            // nguyên trong hàng đợi (KHÔNG xóa, không mất dữ liệu) và tiếp tục tự thử lại ở nền.
+            op.stuck = true;
+          }
           if (op.attempts >= STUCK_RETRY_WARN_AFTER && state.outbox.length > 1) {
-            // Đã thử vài lần vẫn y hệt lỗi này — KHÔNG xóa (không mất dữ liệu), nhưng ĐẨY XUỐNG CUỐI
-            // hàng đợi để các việc KHÔNG LIÊN QUAN phía sau vẫn có cơ hội lên được, thay vì bị đúng 1
-            // dòng hỏng chặn đứng TẤT CẢ mãi mãi (kể cả của thao tác hoàn toàn khác sau này). Dòng bị
-            // đẩy xuống vẫn tiếp tục tự thử lại ở vòng sau (kể cả trong lần gọi syncOutbox() kế tiếp).
+            // ĐẨY XUỐNG CUỐI hàng đợi để các việc KHÔNG LIÊN QUAN phía sau vẫn có cơ hội lên được,
+            // thay vì bị đúng 1 dòng hỏng chặn đứng TẤT CẢ mãi mãi.
             state.outbox.shift();
             state.outbox.push(op);
             persist();
@@ -242,7 +277,12 @@ export async function syncOutbox() {
       state.outbox.shift();
       persist();
     }
-    if (!state.outbox.length) await processPendingMirrors();
+    // CHỈ cần không còn item ĐANG HOẠT ĐỘNG nào (chưa đánh dấu `stuck`) là đủ điều kiện xử lý tiếp
+    // hàng đợi mirror — KHÔNG còn đòi hỏi outbox rỗng HẲN như trước (1 item `stuck` — lỗi thật lặp lại
+    // nhiều lần — có thể không bao giờ tự hết, nếu vẫn bắt đợi nó mới xử lý mirror thì mirror của MỌI
+    // thao tác khác, không liên quan, cũng bị chặn đứng mãi mãi theo, đúng lỗi "Người khác nợ tôi
+    // không tự lên" đã gặp).
+    if (!state.outbox.some((op) => !op.stuck)) await processPendingMirrors();
   } finally {
     syncingOutbox = false;
     notify();
@@ -413,7 +453,7 @@ async function loadSessionData(token, { strict = false, skipTables = new Set() }
   const allResults = [userRes, catRes, txnRes, budgetRes, recRes, goalRes, planRes, creditorRes, debtEntryRes, debtorRes, receivableRes, notiRes, readRes];
   const firstErrorResult = allResults.find((r) => r.error);
   if (firstErrorResult) {
-    const msg = `Lỗi tải 1 bảng dữ liệu: ${firstErrorResult.error.message || firstErrorResult.error}`;
+    const msg = `Lỗi tải 1 bảng dữ liệu: ${describeError(firstErrorResult.error)}`;
     if (strict) {
       // Đang refresh() 1 phiên CÓ SẴN dữ liệu thật -> không ghi đè gì cả, ném lỗi để refresh() giữ
       // nguyên dữ liệu cũ và tự thử lại sau (xem catch ở refresh()).
