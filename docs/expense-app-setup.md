@@ -737,27 +737,33 @@ máy nào biết máy nào (mỗi máy có "hàng đợi" riêng trong bộ nh�
 **KHÔNG cần chạy SQL hay deploy lại Edge Function cho mục này** — đây là thay đổi thuần phía app
 (trình duyệt), không đụng tới cấu trúc dữ liệu trên Supabase.
 
-Kỹ thuật (tóm tắt, xem thêm chú thích trong `js/state.js` và `js/app.js`): mỗi thao tác ghi vẫn lưu
-ngay vào bộ nhớ máy (dùng được liền); nếu lúc đó không gửi lên Supabase được (mất mạng/lỗi mạng),
-việc gửi được xếp vào 1 "hàng đợi" (outbox) cũng lưu trong bộ nhớ máy. App thử gửi lại hàng đợi qua
-nhiều "đường" khác nhau: sự kiện `online` (có mạng lại), `focus`/`visibilitychange` (mở lại app từ
-nền/khóa màn hình — thường là lúc thực sự nhận ra vừa có mạng lại), và 2 hẹn giờ dự phòng — 1 cái mỗi
-5 giây (có xét cờ `navigator.onLine`, bỏ qua nếu cờ báo RÕ RÀNG đang mất mạng, tránh cứ thử hoài vô
-ích) và 1 cái mỗi 60 giây (KHÔNG xét cờ này, phòng hờ cờ báo sai mãi thì vẫn tự sửa lại được, chỉ
-chậm hơn). Riêng bước "điền hộ" Mượn nợ sang sổ riêng của 1 thành viên (gọi Edge Function, xem mục
-13) có 1 hàng đợi RIÊNG (`pendingMirrors`) — chạy SAU khi hàng đợi chính ở trên đã gửi xong hết (đảm
-bảo chủ nợ/dòng sổ nợ đã thật sự có trên Supabase) — nên bước điền hộ này CŨNG tự làm lại khi có
-mạng, không cần làm tay; ngay khi có job điền hộ nào vừa thành công, app tự tải lại riêng 2 bảng
-"Người khác nợ tôi" đọc từ đó (`debtors`/`receivable_entries`) nên mục này tự cập nhật ngay, không
-cần thoát ra vào lại. `service-worker.js` cũng được sửa để lưu sẵn "vỏ" app (giao diện) vào bộ nhớ
-đệm của trình duyệt, cho phép MỞ được app ngay cả khi mất mạng ngay từ đầu (không chỉ khi tab đang mở
-sẵn từ trước) — có mạng vẫn luôn ưu tiên lấy bản mới nhất như trước, không sợ bị kẹt xem bản cũ.
+Kỹ thuật (tóm tắt, xem thêm chú thích trong `js/state.js` và `js/app.js`): mỗi thao tác ghi LUÔN thử
+gửi thẳng lên Supabase TRƯỚC (có mạng thì gần như xong ngay, không cần chờ gì thêm); CHỈ khi trình
+duyệt báo RÕ RÀNG đang mất mạng (`navigator.onLine === false`) mới bỏ qua bước thử này, lưu ngay vào
+1 "hàng đợi" (outbox, cũng lưu trong bộ nhớ máy) để gửi lại sau — tránh vừa mất công chờ 1 lượt gọi
+mạng vô ích vừa có lúc đoán nhầm kết quả trả về là "lỗi thật" trong khi đơn giản chỉ là do đang mất
+mạng. App tự gửi lại hàng đợi ngay khi có dấu hiệu vừa có mạng lại: sự kiện `online`, `focus`/
+`visibilitychange` (mở lại app từ nền/khóa màn hình), và 1 hẹn giờ mỗi 5 giây (chỉ để phòng hờ những
+tín hiệu trên không bắn ra kịp — bản thân việc gọi này rất rẻ, THẬT SỰ gọi mạng khi có việc chờ VÀ
+đang có mạng, còn không thì tự dừng ngay, không hiện lỗi gì).
 
-Có 1 dải màu vàng phía trên đầu trang khi đang mất mạng hoặc còn thay đổi chưa đồng bộ (kể cả bước
-điền hộ), để biết ngay là dữ liệu chưa lên tới máy chủ/chưa điền hộ xong, tránh tưởng nhầm là mất dữ
-liệu. Nếu gặp 1 lỗi THẬT lúc đồng bộ (không phải chỉ đang chờ có mạng — VD dữ liệu bị từ chối, hoặc
-bước điền hộ thử nhiều lần vẫn không được) thì dải này chuyển sang **màu đỏ** kèm mô tả lỗi cụ thể,
-để không còn "im lặng mãi" như trước — báo lại đúng nội dung dải đỏ đó nếu cần hỗ trợ.
+Riêng bước "điền hộ" Mượn nợ sang sổ riêng của 1 thành viên (gọi Edge Function, xem mục 13): khi ĐANG
+CÓ MẠNG và không còn giao dịch/ghi nợ nào khác đang dở dang, app THỬ ĐIỀN HỘ NGAY LÚC ĐÓ (không xếp
+vào hàng đợi trước) — nên "Người khác nợ tôi" của thành viên đó cập nhật gần như NGAY LẬP TỨC, không
+cần thoát ra vào lại, và cũng không hiện dải "đang đồng bộ" cho trường hợp bình thường này (có mạng,
+xong ngay, không có gì đáng báo). Chỉ khi mất mạng, hoặc thử điền hộ ngay bị lỗi, việc này mới rơi vào
+1 hàng đợi riêng (`pendingMirrors`) để tự làm lại sau — cũng theo cùng nguyên tắc trên. `service-
+worker.js` cũng được sửa để lưu sẵn "vỏ" app (giao diện) vào bộ nhớ đệm của trình duyệt, cho phép MỞ
+được app ngay cả khi mất mạng ngay từ đầu (không chỉ khi tab đang mở sẵn từ trước) — có mạng vẫn luôn
+ưu tiên lấy bản mới nhất như trước, không sợ bị kẹt xem bản cũ.
+
+Có 1 dải màu vàng phía trên đầu trang khi còn thay đổi chưa đồng bộ (kể cả bước điền hộ nếu bị rớt lại
+hàng đợi) — chữ hiện ra phân biệt rõ "đang chờ có mạng" (đang mất mạng, chưa có gì đang chạy) hay
+"đang đồng bộ" (có mạng, đang thật sự gửi lên) — để biết ngay là dữ liệu chưa lên tới máy chủ, tránh
+tưởng nhầm là mất dữ liệu. Nếu gặp 1 lỗi THẬT lúc đồng bộ (không phải chỉ đang chờ có mạng — VD dữ
+liệu bị từ chối, hoặc bước điền hộ thử nhiều lần vẫn không được) thì dải này chuyển sang **màu đỏ**
+kèm mô tả lỗi cụ thể, để không còn "im lặng mãi" như trước — báo lại đúng nội dung dải đỏ đó nếu cần
+hỗ trợ.
 
 **Phạm vi hiện tại** — các mục khác vẫn cần có mạng như trước (có thể bổ sung sau nếu cần):
 Danh mục, Ngân sách, Định kỳ, Tiết kiệm, Kế hoạch, Thông báo, Quản lý User, Cài đặt, và phía "Cho
