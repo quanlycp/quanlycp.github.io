@@ -1,6 +1,7 @@
 import * as S from '../state.js';
 import { icon } from '../icons.js';
 import { toast } from '../components/toast.js';
+import { BUILD_VERSION } from '../buildInfo.js';
 
 export function renderLogin(root, onLoggedIn) {
   const settings = S.getSettings();
@@ -23,6 +24,7 @@ export function renderLogin(root, onLoggedIn) {
           <div class="field-error" id="login-error" style="display:none;margin-bottom:10px"></div>
           <button class="btn btn-primary btn-block" type="submit">${icon('lock', 'icon-sm')} Đăng nhập</button>
         </form>
+        <p style="text-align:center;font-size:11px;color:var(--text-faint);margin:14px 0 0">Bản: ${BUILD_VERSION}</p>
       </div>
     </div>
   `;
