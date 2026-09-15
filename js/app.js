@@ -1,3 +1,5 @@
+import { startAutoSync } from './lib/autoSync.js';
+import { updateRecoveryBanner } from './components/syncRecovery.js';
 import * as S from './state.js';
 import { buildShell, updateActiveNav, updateSyncBanner } from './components/shell.js';
 import { closeAllModals } from './components/modal.js';
@@ -103,7 +105,7 @@ window.addEventListener('hashchange', () => {
   // của họ qua Edge Function), phiên hiện tại không tự biết để cập nhật cho tới khi tải lại trang
   // (đăng xuất/đăng nhập lại) — giờ chỉ cần bấm vào đúng trang Công nợ là đã tự cập nhật, khỏi phải
   // thoát app ra vào lại. Đặt SAU renderApp() (đã tự vẽ ngay bằng dữ liệu cũ, không phải chờ mạng).
-  if (splitHash().path === '#/no') S.refresh();
+  S.refresh();
 });
 window.addEventListener('qtd:logout', () => { closeAllModals(); S.logout(); location.hash = '#/'; renderApp(); });
 
@@ -126,35 +128,9 @@ function refreshSyncUI() {
   }
   lastKnownPending = pending;
   updateSyncBanner(pending, issue);
+  updateRecoveryBanner();
 }
-// Có mạng trở lại (sau khi mất mạng) -> tự đẩy các thay đổi đã ghi tạm lúc
-// offline (outbox trong state.js) lên máy chủ NGAY, khỏi cần đợi thao tác kế
-// tiếp mới nhận ra là đã có mạng. Bắt CẢ 3 kiểu tín hiệu vì trên điện thoại,
-// tình huống thường gặp nhất là: đang mất mạng -> khóa màn hình/chuyển app
-// khác -> bật lại wifi/4G -> mở app lên lại — lúc đó trình duyệt hay chỉ báo
-// lại đúng lúc quay lại app (visibilitychange/focus) chứ 'online' có thể đã
-// bắn ra từ lúc app đang ở NỀN và bị trình duyệt bỏ qua/trì hoãn xử lý:
-// - 'online': có mạng lại trong khi app đang mở/đang xem.
-// - visibilitychange/focus: MỞ LẠI app (từ nền/khóa màn hình) — luôn thử
-//   đồng bộ ngay lúc này, không cần biết trước đó 'online' đã bắn hay chưa.
-async function trySyncNow() {
-  await S.syncOutbox();
-  refreshSyncUI();
-}
-window.addEventListener('online', trySyncNow);
-window.addEventListener('offline', refreshSyncUI);
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') trySyncNow(); });
-window.addEventListener('focus', trySyncNow);
-// CHẶN việc gọi mạng khi CHẮC CHẮN đang mất mạng giờ nằm NGAY BÊN TRONG S.syncOutbox() (xem state.js)
-// — nơi duy nhất thật sự gọi Supabase — nên ở đây gọi trySyncNow() lúc nào cũng AN TOÀN/RẺ: nếu đang
-// mất mạng, syncOutbox() tự trả về ngay lập tức, không gọi mạng, không đổi gì cả. Nhờ vậy hẹn giờ dưới
-// đây có thể gọi ĐỀU ĐẶN mỗi 5 giây mà KHÔNG còn "tự đồng bộ dù biết đang mất mạng" như trước (khi
-// việc chặn còn nằm rải rác ở đây) — chỉ đơn giản là 1 lượt kiểm tra rẻ, cập nhật banner + thử đồng bộ
-// nếu còn việc chờ; có mạng thật thì tự đi qua, mất mạng thì tự no-op, không hiện lỗi gì cả.
-setInterval(() => {
-  refreshSyncUI();
-  if (S.pendingSyncCount() > 0) trySyncNow();
-}, 5000);
+startAutoSync(S, { onStatus: refreshSyncUI });
 // Cảnh báo TRƯỚC khi tải lại/đóng trang lúc CÒN VIỆC CHƯA ĐỒNG BỘ XONG — tải lại đúng lúc 1 lượt gửi
 // đang bay giữa đường (đã tới server, phản hồi chưa kịp về) sẽ khiến máy TƯỞNG NHẦM là chưa gửi (do
 // chưa kịp gỡ khỏi hàng đợi trước khi trang tải lại) rồi lỡ tay bấm ghi lại/nhập lại y hệt lần nữa ->
@@ -212,7 +188,7 @@ if ('serviceWorker' in navigator) {
     // này nhưng KHÔNG phải "có bản mới" — chỉ xử lý khi ĐANG có 1 SW khác kiểm soát rồi mới đổi sang
     // SW mới (đúng nghĩa "vừa cập nhật"), tránh tải lại nhầm ngay lần đầu cài đặt.
     if (!hadControllerAtLoad) return;
-    if (isTypingSomewhere()) showUpdateBanner();
+    if (isTypingSomewhere() || S.pendingSyncCount() > 0) showUpdateBanner();
     else location.reload();
   });
   let swReg = null;
@@ -235,7 +211,7 @@ function showUpdateBanner() {
   // toàn để tự tải lại luôn, khỏi phải chờ người dùng để ý bấm "Tải lại ngay".
   document.addEventListener('focusout', function autoReloadWhenIdle() {
     setTimeout(() => {
-      if (document.getElementById('update-banner') && !isTypingSomewhere()) {
+      if (document.getElementById('update-banner') && !isTypingSomewhere() && S.pendingSyncCount() === 0) {
         document.removeEventListener('focusout', autoReloadWhenIdle);
         location.reload();
       }
@@ -246,6 +222,20 @@ function showUpdateBanner() {
 // Mọi thay đổi dữ liệu (xóa/tạo/sửa...) đều gọi notify() và kích hoạt render
 // lại ở đây — nhưng đây KHÔNG phải là chuyển trang, nên không cuộn lên đầu,
 // để thao tác xong người dùng vẫn đang đứng đúng chỗ vừa thao tác.
-S.subscribe(() => {
-  if (root) renderApp({ scrollTop: false });
+let backgroundRenderPending = false;
+S.subscribe((options = {}) => {
+  if (!root) return;
+  if (options.background && (isTypingSomewhere() || document.querySelector('.modal-overlay'))) {
+    backgroundRenderPending = true;
+    refreshSyncUI();
+    return;
+  }
+  backgroundRenderPending = false;
+  renderApp({ scrollTop: false });
 });
+setInterval(() => {
+  if (backgroundRenderPending && !isTypingSomewhere() && !document.querySelector('.modal-overlay')) {
+    backgroundRenderPending = false;
+    renderApp({ scrollTop: false });
+  }
+}, 500);

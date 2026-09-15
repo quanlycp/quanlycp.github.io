@@ -725,74 +725,13 @@ RLS như các trang khác.
 - [ ] Vào **Nhật ký** (chỉ chủ sổ thấy) kiểm tra thử — thêm/sửa/xóa 1 giao dịch bất kỳ rồi xem có
       hiện đúng dòng mới trong Nhật ký không.
 
-## 15. Dùng được khi mất mạng (offline)
+## 15. Dùng ngoại tuyến và đồng bộ nhiều thiết bị
 
-App giờ vào được và GHI được dữ liệu bình thường khi điện thoại/máy tính KHÔNG có mạng — cụ thể là
-**Giao dịch** (thêm/sửa/xóa) và **Mượn nợ / Trả nợ / Công nợ** (phần dùng nhiều nhất). Có mạng lại,
-app tự động gửi hết các thay đổi đã ghi tạm lên máy chủ, người khác sẽ thấy như bình thường — ĐÚNG
-thời điểm lúc thao tác thật (lúc đang mất mạng), không phải thời điểm có mạng lại. Nhiều tài khoản
-cùng ghi lúc mất mạng ở nhiều máy khác nhau vẫn tự đồng bộ đầy đủ khi mỗi máy có mạng lại, không cần
-máy nào biết máy nào (mỗi máy có "hàng đợi" riêng trong bộ nhớ máy đó).
+Từ bản **2026-09-15 sync-v2**, giao dịch được ghi vào hàng đợi bền vững trước khi gửi mạng. Có mạng lại app gửi việc chờ, đồng thời mọi thiết bị đang mở đều tự tải giao dịch chung. Lỗi máy chủ giữ giao dịch trong hàng đợi và hiển thị rõ, không báo hoàn tất giả.
 
-**KHÔNG cần chạy SQL hay deploy lại Edge Function cho mục này** — đây là thay đổi thuần phía app
-(trình duyệt), không đụng tới cấu trúc dữ liệu trên Supabase.
+Xem [Thiết kế, kiểm thử, khôi phục dữ liệu cũ và triển khai sync-v2](sync-v2.md).
 
-Kỹ thuật (tóm tắt, xem thêm chú thích trong `js/state.js` và `js/app.js`): mỗi thao tác ghi LUÔN thử
-gửi thẳng lên Supabase TRƯỚC (có mạng thì gần như xong ngay, không cần chờ gì thêm); CHỈ khi trình
-duyệt báo RÕ RÀNG đang mất mạng (`navigator.onLine === false`) mới bỏ qua bước thử này, lưu ngay vào
-1 "hàng đợi" (outbox, cũng lưu trong bộ nhớ máy) để gửi lại sau — tránh vừa mất công chờ 1 lượt gọi
-mạng vô ích vừa có lúc đoán nhầm kết quả trả về là "lỗi thật" trong khi đơn giản chỉ là do đang mất
-mạng. App tự gửi lại hàng đợi ngay khi có dấu hiệu vừa có mạng lại: sự kiện `online`, `focus`/
-`visibilitychange` (mở lại app từ nền/khóa màn hình), và 1 hẹn giờ mỗi 5 giây (chỉ để phòng hờ những
-tín hiệu trên không bắn ra kịp — bản thân việc gọi này rất rẻ, THẬT SỰ gọi mạng khi có việc chờ VÀ
-đang có mạng, còn không thì tự dừng ngay, không hiện lỗi gì).
-
-Riêng bước "điền hộ" Mượn nợ sang sổ riêng của 1 thành viên (gọi Edge Function, xem mục 13): khi ĐANG
-CÓ MẠNG và không còn giao dịch/ghi nợ nào khác đang dở dang, app THỬ ĐIỀN HỘ NGAY LÚC ĐÓ (không xếp
-vào hàng đợi trước) — nên "Người khác nợ tôi" của thành viên đó cập nhật gần như NGAY LẬP TỨC, không
-cần thoát ra vào lại, và cũng không hiện dải "đang đồng bộ" cho trường hợp bình thường này (có mạng,
-xong ngay, không có gì đáng báo). Chỉ khi mất mạng, hoặc thử điền hộ ngay bị lỗi, việc này mới rơi vào
-1 hàng đợi riêng (`pendingMirrors`) để tự làm lại sau — cũng theo cùng nguyên tắc trên. `service-
-worker.js` cũng được sửa để lưu sẵn "vỏ" app (giao diện) vào bộ nhớ đệm của trình duyệt, cho phép MỞ
-được app ngay cả khi mất mạng ngay từ đầu (không chỉ khi tab đang mở sẵn từ trước) — có mạng vẫn luôn
-ưu tiên lấy bản mới nhất như trước, không sợ bị kẹt xem bản cũ.
-
-Có 1 dải màu vàng phía trên đầu trang khi còn thay đổi chưa đồng bộ (kể cả bước điền hộ nếu bị rớt lại
-hàng đợi) — chữ hiện ra phân biệt rõ "đang chờ có mạng" (đang mất mạng, chưa có gì đang chạy) hay
-"đang đồng bộ" (có mạng, đang thật sự gửi lên) — để biết ngay là dữ liệu chưa lên tới máy chủ, tránh
-tưởng nhầm là mất dữ liệu. Xong hẳn (từ còn việc chờ về hết sạch) thì dải này TỰ ẨN NGAY + báo 1 toast
-"Đã đồng bộ xong..." — việc phát hiện "vừa xong" này gộp về ĐÚNG 1 chỗ (`refreshSyncUI()` trong
-`js/app.js`) dùng chung cho MỌI đường có thể khiến việc đồng bộ hoàn tất (hẹn giờ, sự kiện mạng, hay
-chính lúc điền hộ mirror tự xử lý xong ở nền) — tránh tình trạng đồng bộ xong thật nhưng banner cũ vẫn
-còn treo đó do lỡ có đường nào không đi qua đúng chỗ kiểm tra. Nếu gặp 1 lỗi THẬT lúc đồng bộ (không
-phải chỉ đang chờ có mạng — VD dữ liệu bị từ chối, hoặc bước điền hộ thử nhiều lần vẫn không được) thì
-dải này chuyển sang **màu đỏ** kèm mô tả lỗi cụ thể, để không còn "im lặng mãi" như trước — báo lại
-đúng nội dung dải đỏ đó nếu cần hỗ trợ.
-
-**Chống trùng lặp khi lỡ tải lại trang giữa lúc đang gửi** — 2 lớp bảo vệ:
-1. Giao dịch (`addTransaction`) ghi NGAY vào bộ nhớ/localStorage TRƯỚC khi thử gọi mạng (thay vì đợi
-   gọi mạng xong mới thấy) — thấy ngay trên giao diện dù mạng chậm, và lỡ tải lại trang giữa chừng vẫn
-   còn nguyên dữ liệu (đang tự gửi tiếp ở nền), không tưởng nhầm "mất/chưa lưu" rồi lỡ nhập lại.
-2. Có cảnh báo của trình duyệt trước khi tải lại/đóng trang lúc còn việc chưa đồng bộ xong (che chắn
-   thao tác tải lại NGOÀI Ý MUỐN đúng lúc 1 lượt gửi đang bay giữa đường).
-3. Lỡ vẫn có 1 lượt gửi TRÙNG (VD do (2) không cản được — 1 số trình duyệt di động bỏ qua cảnh
-   báo này, hoặc mất điện đột ngột): `syncOutbox()` tự nhận ra INSERT bị từ chối do **trùng khóa
-   chính** (id do chính máy tự sinh) là dấu hiệu "dòng NÀY đã gửi thành công ở lần trước rồi" (không
-   phải lỗi thật) — tự coi như xong, không giữ lại retry mãi (tránh dải "đang đồng bộ" bị kẹt vĩnh
-   viễn vì 1 lỗi lẽ ra không phải lỗi).
-
-Lưu ý: các lớp trên chỉ chặn việc CODE tự gửi trùng 1 dòng — không chặn được việc NGƯỜI DÙNG tự tay
-bấm ghi lại/nhập lại 1 khoản y hệt (2 dòng với 2 id khác nhau, đều hợp lệ) vì tưởng lần trước chưa lưu;
-xóa bớt dòng thừa trong trường hợp đó phải làm thủ công như xóa 1 giao dịch bình thường.
-
-**Phạm vi hiện tại** — các mục khác vẫn cần có mạng như trước (có thể bổ sung sau nếu cần):
-Danh mục, Ngân sách, Định kỳ, Tiết kiệm, Kế hoạch, Thông báo, Quản lý User, Cài đặt, và phía "Cho
-vay/Tôi nợ" (công nợ phải thu, không liên quan tới thành viên trong sổ).
-
-### 15.1 Việc còn lại cho mục này
-
-- [ ] Thử tắt mạng (chế độ máy bay), mở lại app, thêm 1-2 giao dịch/mượn nợ, xong bật mạng lại — kiểm
-      tra dải màu vàng biến mất và dữ liệu đã lên đúng trên tài khoản khác.
+Bản sửa không yêu cầu schema hay Edge Function mới. Backend vẫn phải có schema và RLS đúng theo các mục trên. Tính năng tự điền công nợ qua Edge Function giữ cơ chế riêng mô tả ở mục 13.
 
 ## 16. Việc còn lại
 

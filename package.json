@@ -4,6 +4,7 @@
   "private": true,
   "description": "Sổ Chi Tiêu — quản lý chi tiêu & kế hoạch ngân sách hàng tháng cho gia đình/cá nhân. Web app thuần HTML/CSS/JS, không cần build. Kết nối Supabase (database + Edge Function thật, xem docs/expense-app-setup.md).",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --experimental-vm-modules --test tests/*.test.cjs"
   }
 }

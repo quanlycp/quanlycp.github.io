@@ -21,15 +21,8 @@
      dùng được SVG) thì icon mới hiện đúng khi "Thêm vào màn hình chính". -->
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="stylesheet" href="css/styles.css">
-<!-- Mở kết nối sớm tới 2 nơi app luôn phải gọi (CDN esm.sh + Supabase) ngay
-     lúc parse HTML, đỡ mất thời gian bắt tay DNS/TLS lúc mới mở app. -->
-<link rel="preconnect" href="https://esm.sh" crossorigin>
+<!-- SDK được lưu cùng website để có thể khởi động khi mất mạng. -->
 <link rel="preconnect" href="https://iswfooouxpzcijynvalv.supabase.co" crossorigin>
-<!-- Kết nối Supabase — CDN ESM, giữ đúng kiến trúc "0 dependency, không cần
-     build" của app: xem docs/expense-app-setup.md -->
-<script type="importmap">
-{ "imports": { "@supabase/supabase-js": "https://esm.sh/@supabase/supabase-js@2" } }
-</script>
 </head>
 <body>
 <div id="root">

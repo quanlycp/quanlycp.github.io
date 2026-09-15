@@ -9,7 +9,7 @@
 // *** CẦN ĐIỀN LẠI 3 GIÁ TRỊ DƯỚI ĐÂY sau khi tạo project Supabase mới cho
 // app "Sổ Chi Tiêu" (xem docs/expense-app-setup.md mục 1 và 4) — 3 giá trị
 // đang để rỗng/placeholder vì đây là project MỚI, chưa từng tạo. ***
-import { createClient } from '@supabase/supabase-js';
+import { createClient } from '../vendor/supabase.js';
 
 export const SUPABASE_URL = 'https://iswfooouxpzcijynvalv.supabase.co';
 export const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imlzd2Zvb291eHB6Y2lqeW52YWx2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0NDA0NjgsImV4cCI6MjEwNDAxNjQ2OH0.FKcs3E2Y341ODpGZn7ooqEX5aV9ARQw1B6eKq1hReWU';
@@ -38,7 +38,13 @@ export function getSupabaseClient(jwt) {
   if (cachedClient && cachedJwt === key) return cachedClient;
   cachedClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     auth: { persistSession: false, autoRefreshToken: false },
-    global: key ? { headers: { Authorization: `Bearer ${key}` } } : {},
+    global: {
+      ...(key ? { headers: { Authorization: `Bearer ${key}` } } : {}),
+      fetch: (url, options = {}) => fetch(url, {
+        ...options,
+        signal: options.signal || AbortSignal.timeout(15000),
+      }),
+    },
   });
   cachedJwt = key;
   return cachedClient;

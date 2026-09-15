@@ -14,31 +14,76 @@
 // tới Supabase (khác gốc) hay các phương thức khác (POST/PATCH/DELETE...) đều
 // KHÔNG bị chặn ở đây (không gọi event.respondWith), để state.js tự xử lý mất
 // mạng bằng cơ chế outbox/đồng bộ riêng của nó.
-const CACHE_NAME = 'chitieu-shell-v1';
+const CACHE_NAME = 'chitieu-shell-2026-09-15-sync-v2';
+const APP_SHELL = [
+  "./",
+  "index.html",
+  "css/styles.css",
+  "manifest.json",
+  "js/app.js",
+  "js/buildInfo.js",
+  "js/icons.js",
+  "js/state.js",
+  "js/utils.js",
+  "js/components/modal.js",
+  "js/components/shell.js",
+  "js/components/syncRecovery.js",
+  "js/components/toast.js",
+  "js/components/txnForm.js",
+  "js/components/ui.js",
+  "js/lib/autoSync.js",
+  "js/lib/push.js",
+  "js/lib/supabaseClient.js",
+  "js/vendor/supabase.js",
+  "js/views/activityLog.js",
+  "js/views/budgets.js",
+  "js/views/changePassword.js",
+  "js/views/changePasswordSelf.js",
+  "js/views/dashboard.js",
+  "js/views/debts.js",
+  "js/views/login.js",
+  "js/views/notifications.js",
+  "js/views/plans.js",
+  "js/views/plansAndSavings.js",
+  "js/views/recurring.js",
+  "js/views/reports.js",
+  "js/views/savings.js",
+  "js/views/settings.js",
+  "js/views/transactions.js",
+  "js/views/users.js",
+  "icons/app-icon-192.png",
+  "icons/app-icon-512.png",
+  "icons/apple-touch-icon.png",
+  "icons/icon.png"
+];
 
-self.addEventListener('install', () => {
-  self.skipWaiting();
+self.addEventListener('install', (event) => {
+  event.waitUntil((async () => {
+    const cache = await caches.open(CACHE_NAME);
+    await cache.addAll(APP_SHELL);
+    await self.skipWaiting();
+  })());
 });
 self.addEventListener('activate', (event) => {
   event.waitUntil((async () => {
     // Dọn cache cũ (đổi CACHE_NAME khi cần buộc làm mới toàn bộ vỏ app).
     const keys = await caches.keys();
-    await Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)));
+    await Promise.all(keys.filter((k) => k.startsWith('chitieu-shell-') && k !== CACHE_NAME).map((k) => caches.delete(k)));
     await self.clients.claim();
   })());
 });
 self.addEventListener('fetch', (event) => {
   const req = event.request;
-  if (req.method !== 'GET' || !req.url.startsWith(self.location.origin)) return;
+  if (req.method !== 'GET' || new URL(req.url).origin !== self.location.origin) return;
   event.respondWith((async () => {
     try {
       // cache: 'no-store' ép trình duyệt LUÔN xin bản mới nhất từ server khi
       // đang CÓ mạng, không tự ý dùng file đã lưu trước đó — tránh tình trạng
       // "đã đẩy code mới nhưng mở app vẫn thấy bản cũ".
-      const fresh = await fetch(req, { cache: 'no-store' });
+      const fresh = await fetch(req, { cache: 'no-store', signal: AbortSignal.timeout(5000) });
       if (fresh && fresh.ok) {
         const cache = await caches.open(CACHE_NAME);
-        cache.put(req, fresh.clone());
+        await cache.put(req, fresh.clone());
       }
       return fresh;
     } catch (e) {

@@ -1,14 +1,6 @@
-// ============================================================
-// Lớp dữ liệu & nghiệp vụ trung tâm (state) cho app "Sổ Chi Tiêu" — kết nối
-// Supabase thật (xem docs/expense-app-setup.md): đăng nhập, danh mục, giao
-// dịch, ngân sách, giao dịch định kỳ, mục tiêu tiết kiệm, thành viên đều
-// đọc/ghi qua Supabase (Edge Function cho thao tác nhạy cảm liên quan mật
-// khẩu/tài khoản, còn lại đi thẳng qua Row Level Security). `state` object
-// trong file này đóng vai trò CACHE trong bộ nhớ (+ lưu tạm vào localStorage
-// để mở lại app không bị trắng trang / giữ được phiên đăng nhập) — mọi hàm
-// ghi đều gọi Supabase trước, thành công mới cập nhật cache + notify() để
-// vẽ lại màn hình.
-// ============================================================
+// Dữ liệu sổ chung được lưu ở Supabase. Cache phục vụ đọc ngoại tuyến; mọi thao tác
+// giao dịch đi qua outbox bền vững trước khi gọi mạng. Refresh gộp dữ liệu máy chủ
+// với thao tác còn chờ và không áp dụng kết quả đọc của phiên đăng nhập cũ.
 import { genId, colorAt, formatVND } from './utils.js';
 import { getSupabaseClient, callLoginFunction, callAccountFunction } from './lib/supabaseClient.js';
 import { subscribeThisDevice, unsubscribeThisDevice, getCurrentEndpoint } from './lib/push.js';
@@ -42,12 +34,12 @@ const SPECIAL_CATEGORIES = [
 
 let state = null;
 const listeners = new Set();
-function notify() { persist(); listeners.forEach((fn) => fn()); }
+function notify(options) { persist(); listeners.forEach((fn) => fn(options)); }
 export function subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); }
 export function getState() { return state; }
 function persist() {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
-  catch (e) { console.error('Không lưu được dữ liệu', e); }
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); return true; }
+  catch (e) { console.error('Không lưu được dữ liệu', e); return false; }
 }
 function emptyState() {
   return {
@@ -56,6 +48,7 @@ function emptyState() {
     debtors: [], receivableEntries: [],
     notifications: [], notificationReads: [],
     session: null,
+    syncVersion: 2, recoveryTransactions: [],
     outbox: [], // xem "Ngoại tuyến (offline)" phía dưới
     pendingMirrors: [], // bước "điền hộ" mirror còn chờ đồng bộ — xem "Ngoại tuyến (offline)" phía dưới
   };
@@ -117,17 +110,60 @@ function describeError(error) {
   if (error.hint) parts.push(`gợi ý: ${error.hint}`);
   return parts.join(' — ');
 }
-function queueWrite(table, method, payload, match) {
-  if (!Array.isArray(state.outbox)) state.outbox = []; // phòng hờ dữ liệu cache cũ/lỗi thiếu field này
-  state.outbox.push({ id: genId('op'), table, method, payload: payload || null, match: match || null, createdAt: new Date().toISOString() });
-  persist();
+const tableRevisions = new Map();
+let sessionRevision = 0;
+let recoveryChecked = false;
+const OUTBOX_PREFIX = STORAGE_KEY + ':outbox:';
+const OUTBOX_MIGRATED = STORAGE_KEY + ':outbox-migrated';
+function saveOperation(op) {
+  localStorage.setItem(OUTBOX_PREFIX + op.id, JSON.stringify(op));
 }
-// Số lần thử lại (trong lúc THẬT SỰ đang online, xem syncOutbox()) trước khi coi 1 việc bị "kẹt" là
-// đáng báo cho người dùng biết — dù vẫn bị coi là "lỗi mạng" (VD do CORS bị chặn, luôn ném y hệt lỗi
-// "Failed to fetch" như mất mạng thật, KHÔNG cách nào phân biệt được từ phía trình duyệt) chứ không
-// phải mất mạng thật, thì sau chừng này lần thử vẫn y hệt lỗi -> báo rõ thay vì "đang đồng bộ" mãi mãi
-// mà không ai biết vì sao (vẫn giữ lại hàng đợi để tiếp tục thử, không rớt mất dữ liệu).
-const STUCK_RETRY_WARN_AFTER = 4;
+function readStoredOutbox() {
+  const operations = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key?.startsWith(OUTBOX_PREFIX)) operations.push(JSON.parse(localStorage.getItem(key)));
+  }
+  return operations.sort((a, b) => (a.order || Date.parse(a.createdAt) || 0) - (b.order || Date.parse(b.createdAt) || 0));
+}
+function reloadOutbox() { state.outbox = readStoredOutbox(); }
+function touchTable(table) { tableRevisions.set(table, (tableRevisions.get(table) || 0) + 1); }
+function queueWrite(table, method, payload, match) {
+  const op = { id: genId('op'), table, method, payload: payload || null, match: match || null,
+    actorId: getSession()?.id, createdAt: new Date().toISOString() };
+  op.order = readStoredOutbox().reduce((order, item) => Math.max(order, (item.order || Date.parse(item.createdAt) || 0) + 1), Date.now());
+  // Mỗi việc có khóa riêng: tab khác lưu cache không được xóa hàng đợi của tab này.
+  try { saveOperation(op); }
+  catch (error) {
+    throw new Error('Không lưu được trên thiết bị. Hãy giải phóng dung lượng rồi thử lại.');
+  }
+  reloadOutbox();
+  persist();
+  touchTable(table);
+  return op;
+}
+function canSyncOperation(op, session) {
+  const actor = op.actorId || op.payload?.user_id;
+  return !actor || actor === session?.id;
+}
+function matchesRow(row, match) {
+  return !!match && (Array.isArray(match) ? match : [match]).every((m) => row[m.column] === m.value);
+}
+function overlayOutbox(table, rows, userId) {
+  let merged = rows.map((row) => ({ ...row }));
+  for (const op of state.outbox) {
+    if (op.table !== table) continue;
+    // Chỉ giao dịch thuộc sổ chung. Công nợ riêng vẫn theo tài khoản đang xem.
+    if (table !== 'transactions' && !op.payload?.shared && !canSyncOperation(op, { id: userId })) continue;
+    if (op.method === 'insert') {
+      if (!merged.some((row) => row.id === op.payload.id)) merged.push({ ...op.payload });
+    } else if (op.method === 'update') {
+      merged = merged.map((row) => matchesRow(row, op.match) ? { ...row, ...op.payload } : row);
+    } else if (op.method === 'delete') merged = merged.filter((row) => !matchesRow(row, op.match));
+  }
+  return merged;
+}
+
 /** Xếp 1 việc mirror (điền hộ sang sổ riêng thành viên) còn dang dở vào hàng đợi riêng — xem
  * processPendingMirrors() phía dưới. `job.op`: 'add' (cần creditorId+entryId, tự tìm lại đúng dòng
  * đó lúc xử lý), 'update'/'delete' (cần mirrorEntryId — dòng mirror ĐÃ có sẵn từ trước, giờ cần sửa/
@@ -201,164 +237,113 @@ function applyMatch(query, match) {
   for (const m of (Array.isArray(match) ? match : [match])) query = query.eq(m.column, m.value);
   return query;
 }
-/** Thử ghi thẳng lên Supabase (insert/update/delete). Mất mạng (hoặc lỗi rõ do mạng) -> tự xếp vào
- * outbox để gửi lại sau, coi như đã "lưu tạm" xong (KHÔNG throw) — nơi gọi vẫn cập nhật bộ nhớ/
- * localStorage của mình bình thường, chỉ là chưa lên tới Supabase. Lỗi THẬT thì trả lỗi để nơi gọi
- * tự throw như trước (không nên giấu lỗi thật vào hàng đợi, người dùng cần biết ngay).
- *
- * CHẮC CHẮN đang mất mạng (navigator.onLine === false) -> xếp vào hàng đợi NGAY, KHÔNG thử gọi mạng
- * trước nữa. TRƯỚC ĐÂY vẫn cứ thử gọi thật dù cờ báo mất mạng (lý do: cờ này không đáng tin cậy
- * 100%) — nhưng qua trải nghiệm thực tế, việc này gây đúng 2 vấn đề: (1) mất thời gian chờ 1 lượt gọi
- * mạng vô ích rồi mới chịu queue, cảm giác "vẫn cứ đồng bộ dù rõ ràng đang mất mạng"; (2) một số môi
- * trường trả về lỗi KHÔNG phải TypeError chuẩn khi thật sự mất mạng (VD lỗi 5xx/timeout do proxy nội
- * bộ chặn thay vì fetch() tự ném exception) khiến isNetworkError() nhận nhầm thành lỗi THẬT, hiện đỏ
- * oan ngay lúc KHÔNG có mạng. Bỏ qua bước thử này khi cờ đã nói rõ "mất mạng" giải quyết dứt điểm cả
- * 2 — không cần đoán đúng/sai lỗi trả về nữa vì không hề gọi mạng. Vẫn KHÔNG chặn theo cờ này khi nó
- * báo "true" (có thể sai chiều ngược lại) — chỉ chặn khi báo rõ false, trường hợp DUY NHẤT gần như
- * luôn đúng trên mọi trình duyệt. */
+/** Ghi vào outbox trước, rồi thử gửi theo thứ tự. Lỗi máy chủ giữ nguyên việc chờ và
+ * hiện trên banner; không biến dữ liệu cục bộ thành một giao dịch đã đồng bộ giả. */
 async function tryWrite(sb, table, method, payload, match) {
-  if (navigator.onLine === false) { queueWrite(table, method, payload, match); return { queued: true, error: null }; }
-  try {
-    let q = sb.from(table);
-    if (method === 'insert') q = q.insert(payload);
-    else if (method === 'update') q = applyMatch(q.update(payload), match);
-    else if (method === 'delete') q = applyMatch(q.delete(), match);
-    const { error } = await q;
-    if (error) {
-      if (isNetworkError(error)) { queueWrite(table, method, payload, match); return { queued: true, error: null }; }
-      return { queued: false, error };
-    }
-    return { queued: false, error: null };
-  } catch (e) {
-    // fetch tự throw exception (mất mạng giữa chừng) thay vì trả {error} như PostgREST thường làm.
-    queueWrite(table, method, payload, match);
-    return { queued: true, error: null };
-  }
+  let op;
+  try { op = queueWrite(table, method, payload, match); }
+  catch (error) { return { queued: false, error }; }
+  if (navigator.onLine !== false) await syncOutbox();
+  return { queued: state.outbox.some((item) => item.id === op.id), error: null };
 }
-/** Số việc đang chờ đồng bộ — hiện lên giao diện (xem components/shell.js) để người dùng biết đang
- * có thay đổi CHƯA lên tới Supabase, tránh tưởng nhầm là mất dữ liệu hoặc app bị lỗi. KHÔNG đếm các
- * item đã bị đánh dấu `stuck` (lỗi THẬT lặp đi lặp lại nhiều lần, xem syncOutbox()) — 1 item như vậy
- * không còn ở trạng thái "đang chờ đồng bộ bình thường" nữa mà là "cần xem lại thủ công", nếu vẫn đếm
- * chung vào đây thì banner/toast "đã đồng bộ xong" cho MỌI việc khác (không liên quan) sẽ KHÔNG BAO
- * GIỜ hiện được — item đó vẫn được tự thử lại ở nền (phòng khi lỗi được sửa sau), chỉ là không tính
- * vào con số này nữa; lỗi của nó vẫn hiện riêng qua getSyncIssue() (banner đỏ). */
 export function pendingSyncCount() {
-  const activeOutbox = state.outbox.filter((op) => !op.stuck).length;
-  return activeOutbox + (state.pendingMirrors ? state.pendingMirrors.length : 0);
+  return (state?.outbox?.length || 0) + (state?.pendingMirrors?.length || 0);
 }
-
-// Lỗi THẬT (không phải do mất mạng) gặp phải lúc đồng bộ hàng đợi — trước đây gặp lỗi này chỉ
-// console.warn() rồi ÂM THẦM giữ nguyên item đó ở ĐẦU hàng đợi mãi mãi (thử lại y hệt input cũ ở mỗi
-// lần sync sau, luôn lỗi y hệt) -> CHẶN LUÔN mọi thay đổi ghi SAU nó (kể cả của người khác/thao tác
-// khác) không bao giờ lên được, mà người dùng không hề biết vì không có gì báo cả — nhìn như "app bị
-// treo lúc đồng bộ" hoặc "sao mãi không thấy lên". Giờ lưu lại để hiện rõ lên banner (components/
-// shell.js) thay vì im lặng mãi. KHÔNG lưu vào localStorage (chỉ để hiện tạm thời trong phiên hiện tại).
 let lastSyncIssue = null;
-export function getSyncIssue() { return lastSyncIssue; }
+let lastReadIssue = null;
+export function getSyncIssue() { return lastSyncIssue || lastReadIssue; }
 
-let syncingOutbox = false;
-/** Gửi hết hàng đợi lên Supabase theo ĐÚNG THỨ TỰ đã ghi, xong mới xử lý tiếp hàng đợi mirror (xem
- * processPendingMirrors — CHỈ chạy khi outbox chính đã trống hẳn, vì bước mirror cần creditor/dòng sổ
- * nợ đã thật sự tồn tại trên Supabase). Dừng lại (giữ nguyên phần còn lại) ngay khi gặp lỗi mạng — thử
- * lại ở lần gọi sau (sự kiện 'online', hoặc mỗi lần refresh()/vào trang Công nợ). An toàn gọi lặp lại
- * nhiều lần (tự bỏ qua nếu đang chạy dở hoặc cả 2 hàng đợi đang rỗng). */
-export async function syncOutbox() {
-  // KHÔNG có phiên đăng nhập (VD đã đăng xuất, hoặc chưa đăng nhập lần nào trên máy này) -> đừng thử
-  // đồng bộ (không có token hợp lệ để ghi được gì) VÀ đừng gọi notify() ở finally bên dưới — trước đây
-  // cứ hễ còn hàng đợi (VD đăng xuất giữa chừng lúc còn thay đổi chưa kịp lên Supabase) là hẹn giờ/sự
-  // kiện 'online' liên tục gọi lại hàm này, notify() ở finally cứ thế vẽ lại MÀN ĐĂNG NHẬP (root.
-  // innerHTML = ... trong renderLogin) TỪ ĐẦU mỗi vài giây — đúng lúc người dùng đang gõ dở tên đăng
-  // nhập/mật khẩu thì bị "tải lại" xóa sạch input, y hệt phàn nàn "nhập gần xong bị tải lại mất dữ liệu".
-  if (!getSession()) return;
-  // CHẮC CHẮN đang mất mạng (cờ báo rõ false) -> ĐỪNG thử gọi mạng — chỉ đơn giản chưa đến lượt, để
-  // dành cho lần gọi kế tiếp do CHÍNH sự kiện 'online' của trình duyệt kích hoạt (xem app.js) — đúng
-  // yêu cầu "chỉ đồng bộ khi bật lại mạng", thay vì cứ mỗi vài giây lại thử gọi thật (dù biết chắc sẽ
-  // fail) rồi phải phân loại lỗi trả về là "mất mạng" hay "lỗi thật" (dễ đoán nhầm ở 1 số môi trường,
-  // hiện đỏ oan). CHỈ chặn khi cờ nói "false" — không chặn khi nó nói "true" (chiều này có thể sai,
-  // nhưng cứ thử thật vẫn không sao, tự queue lại bình thường nếu quả thật vẫn chưa có mạng) — nên
-  // KHÔNG lo bị kẹt cứng vĩnh viễn nếu chỉ có chiều "true" bị sai: hễ có mạng thật là sự kiện 'online'
-  // sẽ tự bắn ra đưa cờ về true, gọi lại hàm này ngay.
-  if (navigator.onLine === false) return;
-  if (syncingOutbox || (!state.outbox.length && !(state.pendingMirrors || []).length)) return;
-  syncingOutbox = true;
-  lastSyncIssue = null; // để mỗi lần thử lại đều đánh giá lại từ đầu, không giữ mãi thông báo lỗi cũ nếu đã hết lỗi
+async function sendOperation(sb, op) {
+  let q = sb.from(op.table);
+  if (op.method === 'insert') q = q.insert(op.payload);
+  else if (op.method === 'update') q = applyMatch(q.update(op.payload), op.match);
+  else if (op.method === 'delete') q = applyMatch(q.delete(), op.match);
+  else return { error: { message: 'Thao tác trong hàng đợi không hợp lệ.' } };
+  // INSERT/UPDATE cần hàng trả về: HTTP thành công nhưng RLS chặn hết hàng chưa phải đã lưu.
+  const result = await q.select('id');
+  if (op.method === 'insert' && result.error?.code === '23505' && op.payload?.id) {
+    // Phản hồi của lần gửi trước có thể bị mất. Chỉ xác nhận đúng bản ghi đã gửi;
+    // không bỏ mọi lỗi UNIQUE (có thể là xung đột ở cột khác).
+    const existing = await sb.from(op.table).select('*').eq('id', op.payload.id).maybeSingle();
+    const same = existing.data && Object.entries(op.payload).every(([key, value]) => {
+      const actual = existing.data[key];
+      if (key === 'created_at') return Date.parse(actual) === Date.parse(value);
+      return actual === value || (actual != null && value != null && String(actual) === String(value));
+    });
+    if (!existing.error && same) return { error: null };
+  }
+  if (!result.error && op.method !== 'delete' && !result.data?.length) {
+    return { error: { code: '42501', message: 'Máy chủ chưa xác nhận bản ghi. Kiểm tra quyền truy cập (RLS).' } };
+  }
+  return result;
+}
+let syncPromise = null;
+export function syncOutbox() {
+  if (syncPromise) return syncPromise;
+  if (!getSession()?.sbToken || navigator.onLine === false) return Promise.resolve();
+  reloadOutbox();
+  if (!pendingSyncCount()) return Promise.resolve();
+  const drain = () => { reloadOutbox(); return drainOutbox(); };
+  const run = navigator.locks ? navigator.locks.request(STORAGE_KEY + ':sync', drain) : drain();
+  syncPromise = run.finally(() => { syncPromise = null; });
+  return syncPromise;
+}
+async function drainOutbox() {
+  const session = getSession();
+  const revision = sessionRevision;
+  if (isTokenExpired(session.sbToken)) {
+    lastSyncIssue = { message: 'Phiên đăng nhập hết hạn. Hãy đăng nhập lại để gửi các thay đổi đang lưu trên máy.' };
+    notify({ background: true });
+    return;
+  }
+  const sb = getSupabaseClient(session.sbToken);
+  lastSyncIssue = null;
+  const blockedIds = new Set();
+  const attempted = new Set();
   try {
-    const session = getSession();
-    const sb = getSupabaseClient(session?.sbToken);
-    // Giới hạn an toàn: đủ lượt bằng cả hàng đợi (x2 cho rộng rãi) thì DỪNG HẲN vòng lặp này dù chưa
-    // xong — tránh treo trình duyệt vô thời hạn nếu lỡ NHIỀU item đều bị "đẩy xuống cuối" (xem dưới)
-    // rồi vòng lại gặp nhau mãi trong CÙNG 1 lần gọi (không xảy ra trong thực tế thường thì, nhưng
-    // phải chặn được về mặt lý thuyết).
-    let cycles = 0;
-    const cycleLimit = state.outbox.length * 2 + 4;
-    while (state.outbox.length && cycles++ < cycleLimit) {
-      const op = state.outbox[0];
-      let q = sb.from(op.table);
-      if (op.method === 'insert') q = q.insert(op.payload);
-      else if (op.method === 'update') q = applyMatch(q.update(op.payload), op.match);
-      else if (op.method === 'delete') q = applyMatch(q.delete(), op.match);
-      let error = null;
-      try { ({ error } = await q); } catch (e) { error = e; }
-      if (error) {
-        // INSERT bị từ chối do TRÙNG KHÓA CHÍNH (mã lỗi Postgres '23505') — `id` trong payload LUÔN
-        // do CHÍNH máy này tự sinh (genId(), xem addTransaction/addDebtCharge...), không phải giá trị
-        // ai khác có thể trùng ngẫu nhiên, nên chỉ có 1 khả năng: lần gửi TRƯỚC của ĐÚNG op này thật
-        // ra ĐÃ lên tới server thành công rồi — chỉ là phản hồi chưa kịp về tới máy để gỡ op này khỏi
-        // hàng đợi thì lỡ bị TẢI LẠI TRANG giữa chừng (op vẫn còn nguyên trong localStorage, syncOutbox()
-        // sau khi tải lại lại thử gửi tiếp y hệt lần nữa). Coi đây là ĐÃ XONG, không phải lỗi thật cần
-        // báo/giữ lại — tự bỏ qua, không tạo thêm dòng nào (INSERT thứ 2 chính là dòng bị từ chối này).
-        if (op.method === 'insert' && error.code === '23505') {
-          console.warn(`syncOutbox: bỏ qua lỗi trùng khóa chính trên bảng ${op.table} (id đã tồn tại) — dòng này chắc đã gửi thành công ở lần trước, coi như xong.`, op.payload?.id);
-          state.outbox.shift();
-          persist();
-          continue;
-        }
-        op.attempts = (op.attempts || 0) + 1;
-        if (!isNetworkError(error)) {
-          // Lỗi THẬT (VD RLS từ chối, thiếu cột, sai kiểu dữ liệu...) — KHÔNG phải cứ retry là tự hết.
-          console.warn(`syncOutbox: lỗi THẬT (không phải mất mạng) trên bảng ${op.table}:`, error);
-          lastSyncIssue = { message: `Lỗi đồng bộ (bảng ${op.table}): ${describeError(error)}` };
-          if (op.attempts >= STUCK_RETRY_WARN_AFTER) {
-            // Đã thử vài lần vẫn y hệt lỗi này — đánh dấu `stuck` để pendingSyncCount() (và banner/
-            // toast "đã đồng bộ xong") không còn tính item này nữa, tránh việc 1 dòng không sửa được
-            // ngay chặn đứng thông báo "xong" của MỌI thao tác khác không liên quan mãi mãi — vẫn giữ
-            // nguyên trong hàng đợi (KHÔNG xóa, không mất dữ liệu) và tiếp tục tự thử lại ở nền.
-            op.stuck = true;
-          }
-          if (op.attempts >= STUCK_RETRY_WARN_AFTER && state.outbox.length > 1) {
-            // ĐẨY XUỐNG CUỐI hàng đợi để các việc KHÔNG LIÊN QUAN phía sau vẫn có cơ hội lên được,
-            // thay vì bị đúng 1 dòng hỏng chặn đứng TẤT CẢ mãi mãi.
-            state.outbox.shift();
-            state.outbox.push(op);
-            persist();
-            continue;
-          }
-        } else {
-          console.warn('syncOutbox: lỗi mạng, giữ lại thử lần sau:', error.message || error);
-          if (op.attempts >= STUCK_RETRY_WARN_AFTER) {
-            // Đang ONLINE (điều kiện để vào được hàm này) mà vẫn lỗi y hệt "mất mạng" sau ngần này lần
-            // thử -> nhiều khả năng KHÔNG phải mất mạng thật (VD CORS/cấu hình chặn) — báo rõ, vẫn giữ
-            // lại hàng đợi để tiếp tục tự thử (không rớt mất dữ liệu chưa lên được).
-            lastSyncIssue = { message: `Vẫn chưa gửi được sau ${op.attempts} lần thử (bảng ${op.table}) dù đang có mạng — có thể do cấu hình chặn, không phải do mất mạng. Vẫn tiếp tục tự thử lại.` };
-          }
-        }
-        persist(); // lưu lại op.attempts dù chưa bỏ item này khỏi hàng đợi
-        break;
+    while (sessionRevision === revision && navigator.onLine !== false) {
+      const op = state.outbox.find((item) => !attempted.has(item.id));
+      if (!op) break;
+      attempted.add(op.id);
+      if (!canSyncOperation(op, session)) {
+        lastSyncIssue ||= { message: 'Còn thay đổi của tài khoản khác trên máy. Đăng nhập lại tài khoản đã ghi để hoàn tất đồng bộ.' };
+        const id = op.payload?.id;
+        if (id) blockedIds.add(id);
+        continue;
       }
-      state.outbox.shift();
+      const match = Array.isArray(op.match) ? op.match : [op.match];
+      const refs = [...Object.values(op.payload || {}), ...match.filter(Boolean).map((m) => m.value)];
+      if (refs.some((value) => blockedIds.has(value))) {
+        if (op.payload?.id) blockedIds.add(op.payload.id);
+        continue;
+      }
+      let result;
+      try { result = await sendOperation(sb, op); } catch (error) { result = { error }; }
+      if (sessionRevision !== revision) break; // Phiên cũ không được sửa dữ liệu phiên mới.
+      if (result.error) {
+        op.attempts = (op.attempts || 0) + 1;
+        op.lastError = describeError(result.error);
+        lastSyncIssue = { message: 'Chưa đồng bộ được ' + op.table + ': ' + op.lastError + '. Dữ liệu vẫn được giữ trên máy.' };
+        saveOperation(op);
+        persist();
+        if (isNetworkError(result.error) || result.error.code === 'PGRST301' || result.error.code === '42501') break;
+        const id = op.payload?.id || match.find((m) => m?.column === 'id')?.value;
+        if (id) blockedIds.add(id);
+        continue;
+      }
+      localStorage.removeItem(OUTBOX_PREFIX + op.id);
+      reloadOutbox();
+      touchTable(op.table);
       persist();
     }
-    // CHỈ cần không còn item ĐANG HOẠT ĐỘNG nào (chưa đánh dấu `stuck`) là đủ điều kiện xử lý tiếp
-    // hàng đợi mirror — KHÔNG còn đòi hỏi outbox rỗng HẲN như trước (1 item `stuck` — lỗi thật lặp lại
-    // nhiều lần — có thể không bao giờ tự hết, nếu vẫn bắt đợi nó mới xử lý mirror thì mirror của MỌI
-    // thao tác khác, không liên quan, cũng bị chặn đứng mãi mãi theo, đúng lỗi "Người khác nợ tôi
-    // không tự lên" đã gặp).
-    if (!state.outbox.some((op) => !op.stuck)) await processPendingMirrors();
+    if (sessionRevision === revision && !state.outbox.length) await processPendingMirrors();
+  } catch (error) {
+    lastSyncIssue = { message: 'Chưa hoàn tất đồng bộ: ' + describeError(error) + '. Hàng đợi được giữ để thử lại.' };
   } finally {
-    syncingOutbox = false;
-    notify();
+    if (sessionRevision === revision) notify({ background: true });
   }
 }
+
 
 /** Chỉ đọc cache trong localStorage — KHÔNG đụng mạng, xong ngay lập tức. Gọi hàm này rồi vẽ màn
  * hình ra liền (dùng dữ liệu cũ tạm, khỏi phải nhìn "Đang tải..." lâu), sau đó gọi refresh() ở nền
@@ -370,47 +355,69 @@ export async function init() {
   } else {
     state = emptyState();
   }
+  if (!state || typeof state !== 'object' || Array.isArray(state)) state = emptyState();
   // Dữ liệu cache cũ (lưu TRƯỚC khi có tính năng offline này) sẽ THIẾU hẳn field `outbox` (và bất kỳ
   // field mới nào thêm sau này) vì JSON.parse() ở trên chỉ trả đúng những gì đã lưu trước đó -> phải
   // bù lại bằng giá trị mặc định của emptyState(), không thì các hàm gọi state.outbox.push(...) sẽ
   // ném lỗi "Cannot read properties of undefined" ngay khi thêm/sửa/xóa bất kỳ giao dịch nào.
+  if (!state.syncVersion) {
+    // Bản cũ có thể lưu giao dịch trước khi tạo outbox. Giữ bản sao để người dùng
+    // kiểm tra sau khi đối chiếu máy chủ; không tự phục hồi khoản đã bị xóa ở máy khác.
+    state.recoveryTransactions = (state.transactions || []).filter((t) =>
+      !(state.outbox || []).some((op) => op.table === 'transactions' && op.payload?.id === t.id));
+  }
   const defaults = emptyState();
   for (const key of Object.keys(defaults)) {
     if (state[key] === undefined) state[key] = defaults[key];
   }
+  for (const key of Object.keys(defaults)) {
+    if (Array.isArray(defaults[key]) && !Array.isArray(state[key])) state[key] = [];
+  }
+  if (!localStorage.getItem(OUTBOX_MIGRATED)) {
+    for (const op of state.outbox) saveOperation(op);
+    localStorage.setItem(OUTBOX_MIGRATED, '1');
+  }
+  reloadOutbox();
+  // Khôi phục cả việc đã ghi outbox nhưng trang đóng trước khi cập nhật cache.
+  for (const [table, key, map] of SESSION_TABLES) {
+    if (!state.outbox.some((op) => op.table === table)) continue;
+    const rows = state[key].map((item) => Object.fromEntries(Object.entries(item).map(([field, value]) => [
+      field === 'date' ? (table === 'transactions' ? 'txn_date' : 'entry_date') : field.replace(/[A-Z]/g, (c) => '_' + c.toLowerCase()), value,
+    ])));
+    state[key] = overlayOutbox(table, rows, getSession()?.id).map(map);
+  }
+  persist();
 }
-/** Tải dữ liệu mới nhất từ Supabase ở NỀN (không chặn màn hình đầu tiên) — tên sổ (cho màn đăng
- * nhập) + toàn bộ dữ liệu phiên đang đăng nhập (nếu có). Xong tự notify() để vẽ lại. */
-export async function refresh() {
+let refreshPromise = null;
+/** Đồng bộ hai chiều, dùng chung một Promise để không có lượt tải cũ ghi đè lượt mới. */
+export function refresh() {
+  if (refreshPromise) return refreshPromise;
+  if (!state || navigator.onLine === false) return Promise.resolve();
+  refreshPromise = refreshData().finally(() => { refreshPromise = null; });
+  return refreshPromise;
+}
+async function refreshData() {
+  const revision = sessionRevision;
+  const before = JSON.stringify(state);
+  const session = getSession();
   await loadSettingsPublic();
-  if (state.session?.sbToken) {
-    if (isTokenExpired(state.session.sbToken)) {
-      // Phiên hiện sống rất lâu (xem SESSION_HOURS trong Edge Function) nên hiếm khi hết hạn thật,
-      // nhưng vẫn có thể xảy ra (VD phiên đăng nhập từ TRƯỚC khi đổi sang thời hạn dài, hoặc chủ sổ
-      // cấp lại mật khẩu ở thiết bị khác làm mất hiệu lực). Nếu để vậy gọi Supabase với token hết
-      // hạn, Row Level Security sẽ âm thầm lọc MỌI bảng về RỖNG (0 dòng) mà KHÔNG báo lỗi gì cả,
-      // trông y hệt "mất hết dữ liệu" dù dữ liệu vẫn còn nguyên. Chủ động phát hiện ở đây, đăng
-      // xuất luôn để bắt đăng nhập lại lấy phiên mới, thay vì để người dùng hoang mang.
+  if (revision !== sessionRevision) return;
+  if (session?.sbToken) {
+    if (isTokenExpired(session.sbToken)) {
       sessionExpiredNotice = true;
       logout();
       return;
     }
     await syncOutbox();
-    // Vẫn còn thay đổi CHƯA đồng bộ được lên Supabase (đang mất mạng, hoặc lỗi khác) -> KHÔNG được tải
-    // đè lên ĐÚNG NHỮNG BẢNG đang có thay đổi cục bộ chưa gửi lên đó, vì loadSessionData() thay THẲNG
-    // mảng bằng dữ liệu server. TRƯỚC ĐÂY hễ outbox còn BẤT KỲ gì (dù chỉ 1 dòng, ở 1 bảng bất kỳ) là
-    // BỎ QUA HẲN việc tải lại — kể cả những bảng HOÀN TOÀN KHÔNG LIÊN QUAN (VD "Người khác nợ tôi" —
-    // debtors/receivable_entries — chưa bao giờ được ghi qua outbox này cả, luôn ghi qua Edge Function
-    // ở nơi khác) — khiến dữ liệu người khác ghi hộ (mirror) không bao giờ tự cập nhật được qua trang
-    // Công nợ nữa, CHỈ thấy khi đăng nhập lại từ đầu (login() không đi qua đường này). Giờ chỉ bỏ qua
-    // ĐÚNG các bảng đang có việc chờ, mọi bảng khác vẫn tải mới bình thường.
-    const pendingTables = new Set(state.outbox.map((op) => op.table));
-    try { await loadSessionData(state.session.sbToken, { strict: true, skipTables: pendingTables }); }
-    catch (e) { console.warn('Không tải lại được dữ liệu phiên cũ.', e); }
+    if (revision !== sessionRevision) return;
+    await loadSessionData(session.sbToken, { userId: session.id, revision });
   }
-  persist();
-  notify();
+  if (revision === sessionRevision) {
+    persist();
+    if (JSON.stringify(state) !== before) notify({ background: true });
+  }
 }
+
 
 /** Đọc claim "exp" (Unix giây) trong JWT tự ký ở Edge Function mà KHÔNG cần xác minh chữ ký (chỉ để
  * quyết định có nên chủ động đăng xuất sớm hay không — chữ ký thật đã được server xác minh mỗi lần
@@ -468,94 +475,89 @@ export async function updateSettings(patch) {
 // Đăng nhập / phiên làm việc
 // ------------------------------------------------------------
 export async function login(identifier, password) {
+  const revision = ++sessionRevision;
   const res = await callLoginFunction({ identifier, password });
+  if (revision !== sessionRevision) return { ok: false, reason: 'Phiên đăng nhập đã thay đổi. Thử lại.' };
   if (!res.ok) return { ok: false, reason: res.reason };
   try {
-    // strict mặc định false (xem loadSessionData) — 1 bảng PHỤ lỗi (VD chưa setup đủ SQL/RLS cho 1
-    // tính năng "Bổ sung sau" nào đó) KHÔNG chặn hẳn đăng nhập nữa, chỉ coi bảng đó là rỗng + cảnh
-    // báo console. Nhánh catch này giờ chỉ còn bắt lỗi THẬT SỰ nghiêm trọng (VD mất mạng giữa chừng
-    // ngay lúc vừa đăng nhập xong, hoặc lỗi không mong đợi trong seedDefaultCategories/
-    // ensureSpecialCategories) — kèm nguyên văn lý do để còn biết đường sửa, không chỉ 1 câu chung chung.
-    await loadSessionData(res.token);
+    await loadSessionData(res.token, { userId: res.id, revision, login: true });
   } catch (e) {
-    console.warn('login: lỗi tải dữ liệu phiên, thử đăng nhập lại:', e);
-    return { ok: false, reason: `Đăng nhập được nhưng chưa tải được dữ liệu — ${e.message || e}. Thử lại.` };
+    return { ok: false, reason: 'Đăng nhập được nhưng chưa tải được dữ liệu: ' + (e.message || e) };
   }
+  if (revision !== sessionRevision) return { ok: false, reason: 'Phiên đăng nhập đã thay đổi. Thử lại.' };
   return { ok: true, userId: res.id, role: res.role, mustChangePassword: !!res.mustChangePassword, sbToken: res.token };
 }
 
-/** `strict`: TRUE khi gọi từ refresh() (1 phiên ĐANG có dữ liệu thật trong bộ nhớ — lỗi 1 bảng bất kỳ
- * cũng phải dừng hẳn, không ghi đè gì, xem giải thích PHÒNG VỆ bên dưới); FALSE (mặc định) khi gọi từ
- * login() (bộ nhớ đang RỖNG, không có gì để "ghi đè mất" — lỗi 1 bảng PHỤ (VD 1 mục "Bổ sung sau"
- * trong docs chưa setup đủ SQL/RLS trên project này) không nên chặn hẳn cả việc đăng nhập, chỉ cần
- * coi đúng bảng đó là rỗng và cảnh báo, các bảng khác vẫn tải bình thường).
- * `skipTables`: Set tên bảng ĐANG có thay đổi cục bộ chưa gửi lên (xem outbox trong refresh()) — CHỈ
- * đúng những bảng này mới giữ nguyên dữ liệu cục bộ, KHÔNG ghi đè bằng dữ liệu server (tránh mất thay
- * đổi chưa gửi lên); mọi bảng KHÁC (VD debtors/receivable_entries của "Người khác nợ tôi" — chưa bao
- * giờ ghi qua outbox này, luôn ghi qua Edge Function ở nơi khác) vẫn tải mới bình thường dù outbox
- * đang có gì đi nữa — đây là điểm khác biệt với bản trước (bỏ qua HẲN mọi bảng chỉ vì 1 bảng bất kỳ
- * có việc chờ). */
-async function loadSessionData(token, { strict = false, skipTables = new Set() } = {}) {
-  const sb = getSupabaseClient(token);
-  const [
-    userRes, catRes, txnRes, budgetRes, recRes, goalRes, planRes, creditorRes, debtEntryRes, debtorRes, receivableRes, notiRes, readRes,
-  ] = await Promise.all([
-    sb.from('user_profiles').select('*'),
-    sb.from('categories').select('*').order('sort_order'),
-    sb.from('transactions').select('*').order('txn_date', { ascending: false }),
-    sb.from('budgets').select('*'),
-    sb.from('recurring_transactions').select('*'),
-    sb.from('savings_goals').select('*'),
-    sb.from('plans').select('*'),
-    sb.from('creditors').select('*'),
-    sb.from('debt_entries').select('*').order('entry_date', { ascending: false }),
-    sb.from('debtors').select('*'),
-    sb.from('receivable_entries').select('*').order('entry_date', { ascending: false }),
-    sb.from('notifications').select('*'),
-    sb.from('notification_reads').select('notification_id'),
-  ]);
-  // PHÒNG VỆ chống "dữ liệu về 0": khi mất mạng/lỗi, thư viện Supabase KHÔNG ném lỗi (không làm
-  // Promise.all() ở trên reject) — nó trả về BÌNH THƯỜNG với { data: null, error: {...} } cho MỌI câu
-  // truy vấn bị lỗi (VD "Failed to fetch" lúc mất mạng, hoặc RLS âm thầm lọc rỗng nếu JWT không hợp
-  // lệ/khớp) — coi như "thành công" ở mức Promise. Trước đây code chỉ lấy mỗi `data` (bỏ qua hẳn
-  // `error`) rồi `data || []` -> null biến thành RỖNG và ghi đè thẳng vào state, đúng lúc mạng chập
-  // chờn (dễ xảy ra nhất ngay khi vừa có mạng lại, hoặc khi đang mất mạng mà refresh() vẫn lỡ gọi tới
-  // đây) là y hệt hiện tượng "dữ liệu về 0 như ban đầu" dù dữ liệu thật trên Supabase vẫn còn nguyên.
-  const allResults = [userRes, catRes, txnRes, budgetRes, recRes, goalRes, planRes, creditorRes, debtEntryRes, debtorRes, receivableRes, notiRes, readRes];
-  const firstErrorResult = allResults.find((r) => r.error);
-  if (firstErrorResult) {
-    const msg = `Lỗi tải 1 bảng dữ liệu: ${describeError(firstErrorResult.error)}`;
-    if (strict) {
-      // Đang refresh() 1 phiên CÓ SẴN dữ liệu thật -> không ghi đè gì cả, ném lỗi để refresh() giữ
-      // nguyên dữ liệu cũ và tự thử lại sau (xem catch ở refresh()).
-      throw new Error(`${msg} — đã bỏ qua, giữ nguyên dữ liệu cũ.`);
+const SESSION_TABLES = [
+  ['user_profiles', 'users', mapUserProfileRow], ['categories', 'categories', mapCategoryRow],
+  ['transactions', 'transactions', mapTransactionRow], ['budgets', 'budgets', mapBudgetRow],
+  ['recurring_transactions', 'recurring', mapRecurringRow], ['savings_goals', 'savingsGoals', mapSavingsGoalRow],
+  ['plans', 'plans', mapPlanRow], ['creditors', 'creditors', mapCreditorRow],
+  ['debt_entries', 'debtEntries', mapDebtEntryRow], ['debtors', 'debtors', mapDebtorRow],
+  ['receivable_entries', 'receivableEntries', mapReceivableEntryRow], ['notifications', 'notifications', mapNotificationRow],
+  ['notification_reads', 'notificationReads', (row) => row.notification_id],
+];
+async function readAllRows(sb, table) {
+  const rows = [];
+  const pageSize = 500;
+  try {
+    for (let offset = 0; ; offset += pageSize) {
+      const key = table === 'notification_reads' ? 'notification_id' : 'id';
+      const result = await sb.from(table).select('*').order(key).range(offset, offset + pageSize - 1);
+      if (result.error) return result;
+      if (!Array.isArray(result.data)) return { error: { message: 'Phản hồi dữ liệu không hợp lệ.' } };
+      rows.push(...result.data);
+      if (result.data.length < pageSize) return { data: rows, error: null };
     }
-    // Đăng nhập LẦN ĐẦU (bộ nhớ đang rỗng, không có gì để mất) -> đừng chặn hẳn đăng nhập chỉ vì 1
-    // bảng PHỤ lỗi — coi đúng bảng đó là rỗng (đã có sẵn `|| []` bên dưới), các bảng khác vẫn tải
-    // bình thường. Riêng categories thì canh KHÔNG tự tạo trùng bộ mặc định nếu chính bảng này lỗi
-    // (xem check `!catRes.error` ở seedDefaultCategories bên dưới — categories trống OAN do lỗi tải
-    // khác hẳn categories trống THẬT của 1 project mới toanh).
-    console.warn(msg, firstErrorResult.error);
-  }
-  // user_profiles không có tên bảng trùng với outbox (outbox chỉ ghi 'transactions'/'creditors'/
-  // 'debt_entries', xem tryWrite() ở khắp state.js) nên luôn an toàn tải mới — liệt kê tường minh ở
-  // đây để rõ ràng bảng nào ứng với `skipTables` nào, tránh gõ nhầm tên bảng.
-  if (!skipTables.has('transactions')) state.transactions = (txnRes.data || []).map(mapTransactionRow);
-  if (!skipTables.has('creditors')) state.creditors = (creditorRes.data || []).map(mapCreditorRow);
-  if (!skipTables.has('debt_entries')) state.debtEntries = (debtEntryRes.data || []).map(mapDebtEntryRow);
-  state.users = (userRes.data || []).map(mapUserProfileRow);
-  state.categories = (catRes.data || []).map(mapCategoryRow);
-  state.budgets = (budgetRes.data || []).map(mapBudgetRow);
-  state.recurring = (recRes.data || []).map(mapRecurringRow);
-  state.savingsGoals = (goalRes.data || []).map(mapSavingsGoalRow);
-  state.plans = (planRes.data || []).map(mapPlanRow);
-  state.debtors = (debtorRes.data || []).map(mapDebtorRow);
-  state.receivableEntries = (receivableRes.data || []).map(mapReceivableEntryRow);
-  state.notifications = (notiRes.data || []).map(mapNotificationRow);
-  state.notificationReads = (readRes.data || []).map((r) => r.notification_id);
-  if (state.categories.length === 0 && !catRes.error) await seedDefaultCategories(sb);
-  await ensureSpecialCategories(sb);
+  } catch (error) { return { data: null, error }; }
 }
+async function loadSessionData(token, { userId = getSession()?.id, revision = sessionRevision, login = false } = {}) {
+  const sb = getSupabaseClient(token);
+  const revisions = new Map(tableRevisions);
+  const results = await Promise.all(SESSION_TABLES.map(([table]) => readAllRows(sb, table)));
+  if (revision !== sessionRevision) return;
+  reloadOutbox();
+  const coreError = results.slice(0, 3).find((result) => result.error);
+  if (login && coreError) throw new Error(describeError(coreError.error));
+  lastReadIssue = coreError ? { message: 'Chưa tải được sổ chung: ' + describeError(coreError.error) } : null;
+  SESSION_TABLES.forEach(([table, key, map], index) => {
+    const result = results[index];
+    // Lỗi một bảng phụ không chặn các bảng khác; không đổi lỗi tải thành danh sách rỗng.
+    if (result.error) { console.warn('Không tải được bảng ' + table + ':', describeError(result.error)); return; }
+    // Có ghi/xác nhận gửi trong khi request đọc đang chạy: giữ cache, lấy lại ở lượt kế tiếp.
+    if (tableRevisions.get(table) !== revisions.get(table)) return;
+    if (table === 'transactions') {
+      const knownIds = new Set(result.data.map((row) => row.id));
+      state.recoveryTransactions = state.recoveryTransactions.filter((t) => !knownIds.has(t.id));
+      recoveryChecked = true;
+    }
+    state[key] = overlayOutbox(table, result.data, userId).map(map);
+  });
+  state.categories.sort((a, b) => a.sortOrder - b.sortOrder);
+  if (!results[1].error) {
+    if (state.categories.length === 0) await seedDefaultCategories(sb);
+    if (revision === sessionRevision) await ensureSpecialCategories(sb);
+  }
+}
+
+export function listRecoverableTransactions() {
+  return recoveryChecked && getSession() ? state.recoveryTransactions.slice() : [];
+}
+export async function recoverTransactions(ids) {
+  const selected = new Set(ids);
+  for (const t of state.recoveryTransactions.filter((item) => selected.has(item.id))) {
+    const row = { id: t.id, type: t.type, amount: t.amount, category_id: t.categoryId || null,
+      note: t.note || '', txn_date: t.date, user_id: t.userId || getSession().id,
+      recurring_id: t.recurringId || null, created_at: t.createdAt };
+    queueWrite('transactions', 'insert', row);
+    if (!getTransaction(t.id)) state.transactions.push(t);
+    state.recoveryTransactions = state.recoveryTransactions.filter((item) => item.id !== t.id);
+    persist();
+  }
+  notify();
+  await syncOutbox();
+}
+
 
 /** Lần đầu tiên chưa có danh mục nào (database Supabase mới toanh) -> tự tạo sẵn 1 bộ danh mục thường dùng + 2 danh mục hệ thống "Mượn nợ"/"Trả nợ", đỡ phải tự gõ từ đầu. */
 async function seedDefaultCategories(sb) {
@@ -816,16 +818,12 @@ export async function addTransaction({ type, amount, categoryId, note, date, rec
     note: note || '', txn_date: date || new Date().toISOString().slice(0, 10),
     user_id: session.id, recurring_id: recurringId || null, created_at: createdAt,
   };
-  // GHI NGAY vào bộ nhớ/localStorage TRƯỚC khi thử gọi mạng (optimistic THẬT SỰ, không đợi await ở
-  // dưới xong mới thấy) — 2 lý do: (1) thấy ngay lập tức trên giao diện dù mạng đang chậm, khỏi tưởng
-  // nhầm "chưa thấy gì, chắc bị treo/lỗi" rồi lỡ tay bấm lại tạo trùng lặp; (2) lỡ TẢI LẠI TRANG giữa
-  // lúc đang chờ phản hồi mạng thì dữ liệu ĐÃ NẰM SẴN trong localStorage (persist() ngay dưới đây) —
-  // sau khi tải lại vẫn thấy y hệt giao dịch này (đang tự gửi tiếp ở nền qua outbox nếu cần), không
-  // biến mất, không cần nhập lại. Lỗi THẬT (không phải mất mạng) ở bước gọi mạng bên dưới thì rút lại
-  // đúng thay đổi vừa áp dụng rồi mới báo lỗi, không để lại dữ liệu sai/thừa trên máy.
+  // Lưu outbox trước khi chờ mạng; hiện giao dịch ngay trong lúc gửi.
+  // Chỉ rút lại khi không lưu được trên thiết bị. Lỗi máy chủ vẫn giữ việc chờ.
   state.transactions.unshift(mapTransactionRow(row));
+  const writing = tryWrite(sb, 'transactions', 'insert', row);
   notify();
-  const { error } = await tryWrite(sb, 'transactions', 'insert', row);
+  const { error } = await writing;
   if (error) {
     state.transactions = state.transactions.filter((t) => t.id !== row.id);
     notify();
@@ -1393,8 +1391,9 @@ async function refreshReceivablesQuietly(sbToken) {
       sb.from('debtors').select('*'),
       sb.from('receivable_entries').select('*').order('entry_date', { ascending: false }),
     ]);
-    if (!debtorRes.error) state.debtors = (debtorRes.data || []).map(mapDebtorRow);
-    if (!receivableRes.error) state.receivableEntries = (receivableRes.data || []).map(mapReceivableEntryRow);
+    if (getSession()?.sbToken !== sbToken) return;
+    if (!debtorRes.error) state.debtors = overlayOutbox('debtors', debtorRes.data || [], getSession()?.id).map(mapDebtorRow);
+    if (!receivableRes.error) state.receivableEntries = overlayOutbox('receivable_entries', receivableRes.data || [], getSession()?.id).map(mapReceivableEntryRow);
     persist();
     notify();
   } catch (e) {
@@ -1981,9 +1980,11 @@ export async function disablePushOnThisDevice() {
 // ------------------------------------------------------------
 // Session (đăng nhập hiện tại)
 // ------------------------------------------------------------
-export function getSession() { return state.session; }
-export function setSession(session) { state.session = session; notify(); }
+export function getSession() { return state?.session || null; }
+export function setSession(session) { sessionRevision++; state.session = session; notify(); }
 export function logout() {
+  sessionRevision++;
+  lastSyncIssue = null; lastReadIssue = null;
   state.session = null;
   state.users = []; state.categories = []; state.transactions = []; state.budgets = []; state.recurring = []; state.savingsGoals = []; state.plans = []; state.creditors = []; state.debtEntries = [];
   state.debtors = []; state.receivableEntries = [];

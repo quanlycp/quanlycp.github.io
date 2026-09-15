@@ -73,3 +73,7 @@ Security lọc dữ liệu cho các thao tác không nhạy cảm (giao dịch, 
 2. Đổi mật khẩu owner ngay sau lần đăng nhập đầu (app tự bắt đổi).
 3. Không có OTP/SMS — bảo mật dựa trên mật khẩu băm (SHA-256 có muối) + JWT ký ở server, phù hợp
    quy mô gia đình/cá nhân; cân nhắc thêm lớp bảo mật khác nếu dùng cho nhóm lớn hơn.
+
+## Kiểm thử đồng bộ
+
+Chạy `npm test` bằng Node.js 22 trở lên, không cần cài thư viện. Xem [bản sửa sync-v2](docs/sync-v2.md) để biết cơ chế gửi/nhận, phục hồi giao dịch cũ và kiểm tra trên hai thiết bị.
