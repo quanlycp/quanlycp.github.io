@@ -135,6 +135,8 @@ svg { display: block; }
   background: var(--warn-bg, #fef3c7); color: var(--warn-text, #92400e);
   border-bottom: 1px solid var(--border);
 }
+/* display:flex ở trên không được ghi đè trạng thái ẩn sau khi đồng bộ xong. */
+.sync-banner[hidden] { display: none; }
 /* Lỗi THẬT gặp phải lúc đồng bộ (không chỉ đang chờ mạng) — xem S.getSyncIssue() */
 .sync-banner.sync-banner-error {
   background: var(--danger-bg, #fee2e2); color: var(--danger-text, #991b1b);

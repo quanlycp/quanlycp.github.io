@@ -14,7 +14,7 @@
 // tới Supabase (khác gốc) hay các phương thức khác (POST/PATCH/DELETE...) đều
 // KHÔNG bị chặn ở đây (không gọi event.respondWith), để state.js tự xử lý mất
 // mạng bằng cơ chế outbox/đồng bộ riêng của nó.
-const CACHE_NAME = 'chitieu-shell-2026-09-15-sync-v2';
+const CACHE_NAME = 'chitieu-shell-2026-09-15-sync-v2.1';
 const APP_SHELL = [
   "./",
   "index.html",

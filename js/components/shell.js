@@ -73,7 +73,12 @@ export function buildShell(root, isOwner) {
 export function updateSyncBanner(pendingCount, syncIssue) {
   const el = document.getElementById('sync-banner');
   if (!el) return;
-  if (!pendingCount && !syncIssue) { el.hidden = true; return; }
+  if (!pendingCount && !syncIssue) {
+    el.hidden = true;
+    el.textContent = '';
+    el.classList.remove('sync-banner-error');
+    return;
+  }
   el.hidden = false;
   el.classList.toggle('sync-banner-error', !!syncIssue);
   if (syncIssue) {
