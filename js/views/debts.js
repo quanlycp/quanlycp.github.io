@@ -17,7 +17,8 @@ import { formatVND, formatDate, formatNumber, attachMoneyInput, unformatMoney } 
 // render() bên dưới) — "Nợ chung" xếp ĐẦU vì liên quan tới cả nhà, ai cũng cần thấy ngay khi vào.
 const DIRECTIONS = {
   sharedOwe: {
-    tabLabel: 'Nợ chung',
+    shared: true,
+    tabLabel: 'Phải trả · quỹ',
     namePrefix: 'Nợ ', // hiện "Nợ Lâm Viên" thay vì chỉ "Lâm Viên" — rõ đây là khoản NỢ, không phải tên 1 mục khác
     listIcon: 'landmark',
     totalLabel: 'Tổng quỹ chung còn nợ',
@@ -30,11 +31,11 @@ const DIRECTIONS = {
     increaseModalTitle: 'Ghi nợ chung mới', increaseDetailBtn: 'Ghi nợ thêm',
     increaseDateLabel: 'Ngày mượn', increaseDescLabel: 'Mượn để làm gì (không bắt buộc)', increaseDescPlaceholder: 'VD: sửa nhà, tiệc chung',
     increaseAmountLabel: 'Số tiền nợ', increaseSubmitLabel: 'Ghi nợ',
-    increaseTxnLabel: 'Tính là 1 khoản thu nhập (tiền/hàng thật về tay)', increaseTxnType: 'income',
+    increaseTxnLabel: 'Tiền vay thực nhận', increaseTxnType: 'income',
     increaseEntryLabel: 'Ghi nợ', increaseIcon: 'cart',
     decreaseTitle: (name) => `Trả nợ chung — ${name}`, decreaseDetailBtn: 'Trả nợ',
     decreaseAmountLabel: 'Số tiền trả', decreaseDateLabel: 'Ngày trả', decreaseSubmitLabel: 'Xác nhận trả nợ',
-    decreaseTxnLabel: 'Đưa vào chi tiêu tháng này', decreaseTxnType: 'expense',
+    decreaseTxnLabel: 'Tiền trả gốc thực chi', decreaseTxnType: 'expense',
     decreaseEntryLabel: 'Trả nợ', decreaseIcon: 'check',
     entryEditIncreaseTitle: 'Sửa ghi nợ', entryEditDecreaseTitle: 'Sửa trả nợ',
     entryDetailIncreaseTitle: 'Dòng ghi nợ', entryDetailDecreaseTitle: 'Dòng trả nợ',
@@ -54,7 +55,7 @@ const DIRECTIONS = {
     },
   },
   owe: {
-    tabLabel: 'Tôi nợ',
+    tabLabel: 'Tôi phải trả',
     namePrefix: 'Nợ ',
     listIcon: 'creditCard',
     totalLabel: 'Tổng còn nợ',
@@ -65,13 +66,13 @@ const DIRECTIONS = {
     renameTitle: 'Đổi tên chủ nợ',
     addBtnLabel: 'Ghi nợ mới',
     increaseModalTitle: 'Ghi nợ mới', increaseDetailBtn: 'Ghi nợ thêm',
-    increaseDateLabel: 'Ngày mua nợ', increaseDescLabel: 'Mua gì (không bắt buộc)', increaseDescPlaceholder: 'VD: gạo, mắm, dầu ăn',
+    increaseDateLabel: 'Ngày phát sinh nợ', increaseDescLabel: 'Nội dung khoản nợ', increaseDescPlaceholder: 'VD: vay tiền, nợ từ kỳ trước',
     increaseAmountLabel: 'Số tiền nợ', increaseSubmitLabel: 'Ghi nợ',
-    increaseTxnLabel: 'Tính là 1 khoản thu nhập (tiền/hàng thật về tay)', increaseTxnType: 'income',
+    increaseTxnLabel: 'Tiền vay thực nhận', increaseTxnType: 'income',
     increaseEntryLabel: 'Ghi nợ', increaseIcon: 'cart',
     decreaseTitle: (name) => `Trả nợ — ${name}`, decreaseDetailBtn: 'Trả nợ',
     decreaseAmountLabel: 'Số tiền trả', decreaseDateLabel: 'Ngày trả', decreaseSubmitLabel: 'Xác nhận trả nợ',
-    decreaseTxnLabel: 'Đưa vào chi tiêu tháng này', decreaseTxnType: 'expense',
+    decreaseTxnLabel: 'Tiền trả gốc thực chi', decreaseTxnType: 'expense',
     decreaseEntryLabel: 'Trả nợ', decreaseIcon: 'check',
     entryEditIncreaseTitle: 'Sửa ghi nợ', entryEditDecreaseTitle: 'Sửa trả nợ',
     entryDetailIncreaseTitle: 'Dòng ghi nợ', entryDetailDecreaseTitle: 'Dòng trả nợ',
@@ -90,7 +91,7 @@ const DIRECTIONS = {
     },
   },
   receivable: {
-    tabLabel: 'Người khác nợ tôi',
+    tabLabel: 'Tôi phải thu',
     listIcon: 'trendingUp',
     totalLabel: 'Tổng sẽ thu về',
     totalColor: 'var(--color-primary-dark)',
@@ -126,6 +127,20 @@ const DIRECTIONS = {
   },
 };
 
+DIRECTIONS.sharedReceivable = {
+  ...DIRECTIONS.receivable, shared: true,
+  tabLabel: 'Phải thu · quỹ', totalLabel: 'Tổng nợ phải thu của quỹ',
+  emptyActive: { title: 'Quỹ chưa có khoản phải thu', message: 'Ghi khoản quỹ cho vay để theo dõi tiền và nợ phải thu.' },
+  api: {
+    ...DIRECTIONS.receivable.api,
+    list: (filters = {}) => S.listDebtors({ ...filters, shared: true }),
+    listNames: () => S.listDebtorNames(true),
+    total: () => S.financialPosition().receivable,
+    addIncrease: payload => S.addReceivableLend({ ...payload, shared: true }),
+    deleteByName: name => S.deleteDebtorsByName(name, true),
+  },
+};
+
 let direction = 'sharedOwe';
 let tab = 'active';
 
@@ -134,14 +149,16 @@ export function renderHeader(headerEl) {
 }
 
 export function render(contentEl) {
+  const requested = sessionStorage.getItem('finance-debt-tab');
+  if (requested && DIRECTIONS[requested]) { direction = requested; sessionStorage.removeItem('finance-debt-tab'); }
   const cfg = DIRECTIONS[direction];
   const total = cfg.api.total();
   contentEl.innerHTML = `
-    <div class="tabs mb-16">
-      ${Object.entries(DIRECTIONS).map(([key, d]) => `<button data-dir="${key}" class="${direction === key ? 'active' : ''}">${d.tabLabel}</button>`).join('')}
+    <div class="tabs mb-16 finance-debt-tabs">
+      ${['sharedOwe', 'sharedReceivable', 'owe', 'receivable'].map(key => [key, DIRECTIONS[key]]).map(([key, d]) => `<button data-dir="${key}" class="${direction === key ? 'active' : ''}">${d.tabLabel}</button>`).join('')}
     </div>
     <div class="card card-pad mb-16">
-      <div class="oc-line"><span>${cfg.totalLabel}</span><b style="color:${cfg.totalColor}">${formatVND(total)}</b></div>
+      <p class="finance-note mb-12">${cfg.shared ? 'Quỹ chung · mọi thành viên cùng theo dõi.' : 'Công nợ cá nhân · tách biệt với tiền và công nợ của quỹ.'} Số nợ còn lại tự chuyển sang kỳ sau đến khi tất toán.</p><div class="oc-line"><span>${cfg.totalLabel}</span><b style="color:${cfg.totalColor}">${formatVND(total)}</b></div>
     </div>
     <div class="mb-16"><button class="btn btn-primary btn-block" id="btn-add">${icon('plus', 'icon-sm')} ${cfg.addBtnLabel}</button></div>
     <div class="tabs mb-16">
@@ -233,7 +250,7 @@ function entryRowHtml(e, cfg) {
       <div class="row-thumb" style="background:${color}">${icon(icn, 'icon-sm')}</div>
       <div class="row-main">
         <div class="row-title">${label}</div>
-        <div class="row-sub">${formatDate(e.date)}${e.transactionId ? ' · đã tính vào thu/chi' : ''}</div>
+        <div class="row-sub">${formatDate(e.date)}${e.transactionId ? ' · đã ghi dòng tiền' : ''}</div>
       </div>
       <div class="row-end"><span class="amount" style="color:${color}">${isIncrease ? '+' : '-'}${formatVND(e.amount)}</span></div>
     </div>`;
@@ -248,8 +265,8 @@ function openEntryActions(cfg, e, c) {
       <div class="oc-line"><span>Ngày</span><b>${formatDate(e.date)}</b></div>
       ${e.description ? `<div class="oc-line"><span>${isIncrease ? cfg.entryDescLabel : 'Ghi chú'}</span><b>${e.description}</b></div>` : ''}
       <div class="oc-line"><span>Số tiền</span><b>${formatVND(e.amount)}</b></div>
-      <div class="oc-line"><span>Đưa vào thu/chi</span><b>${e.transactionId ? 'Có' : 'Không'}</b></div>
-      ${e.transactionId ? `<p class="text-sm text-muted mt-16">Dòng này có kèm 1 giao dịch thu/chi thật. Sửa/xóa sẽ đồng bộ luôn giao dịch đó.</p>` : ''}
+      <div class="oc-line"><span>Ghi nhận dòng tiền</span><b>${e.transactionId ? 'Có' : 'Không'}</b></div>
+      ${e.transactionId ? `<p class="text-sm text-muted mt-16">Dòng này có kèm 1 giao dịch dòng tiền. Sửa/xóa sẽ đồng bộ luôn giao dịch đó.</p>` : ''}
     `,
     footHtml: `
       <button class="btn btn-outline btn-block" data-edit>${icon('edit', 'icon-sm')} Sửa</button>
@@ -261,7 +278,7 @@ function openEntryActions(cfg, e, c) {
         closeFn();
         confirmDialog({
           title: 'Xóa dòng này?',
-          message: e.transactionId ? 'Giao dịch thu/chi thật đã tạo kèm dòng này cũng sẽ bị xóa. Không thể hoàn tác.' : 'Không thể hoàn tác.',
+          message: e.transactionId ? 'Giao dịch dòng tiền đã tạo kèm dòng này cũng sẽ bị xóa. Không thể hoàn tác.' : 'Không thể hoàn tác.',
           confirmLabel: 'Xóa', danger: true,
           onConfirm: async () => {
             try { await cfg.api.deleteEntry(e.id); toast('Đã xóa', 'success'); openCounterpartDetail(c.id, cfg); }
@@ -292,14 +309,16 @@ function openEditEntryForm(cfg, e, c) {
         <input id="entry-amount" type="text" inputmode="numeric" value="${formatNumber(e.amount)}" required/>
         ${maxAmount != null ? `<div class="field-hint">Tối đa ${formatVND(maxAmount)} (nợ còn lại)</div>` : ''}
       </div>
-      ${addToTxnFieldsHtml('entry', !!e.transactionId, txnType, txnLabel)}
+      ${addToTxnFieldsHtml('entry', !!e.transactionId, txnType, txnLabel, cfg.shared)}
       <div class="field-error" id="entry-error" style="display:none;margin-bottom:10px"></div>
     `,
     footHtml: `<button class="btn btn-primary btn-block" data-save>Lưu thay đổi</button>`,
     onMount(sheet, closeFn) {
       attachMoneyInput(sheet.querySelector('#entry-amount'));
       bindAddToTxnToggle(sheet, 'entry');
-      sheet.querySelector('[data-save]').addEventListener('click', async () => {
+      sheet.querySelector('[data-save]').addEventListener('click', async (event) => {
+        const saveButton = event.currentTarget;
+        if (saveButton.disabled) return;
         const date = sheet.querySelector('#entry-date').value;
         const description = sheet.querySelector('#entry-desc').value.trim();
         const amount = unformatMoney(sheet.querySelector('#entry-amount').value);
@@ -311,12 +330,14 @@ function openEditEntryForm(cfg, e, c) {
           errEl.style.display = 'block';
           return;
         }
+        saveButton.disabled = true;
         try {
           await cfg.api.updateEntry(e.id, { amount, date, description, categoryId, addToTransactions });
           toast('Đã lưu', 'success');
           closeFn();
           openCounterpartDetail(c.id, cfg);
         } catch (err) { errEl.textContent = err.message || 'Có lỗi xảy ra'; errEl.style.display = 'block'; }
+        finally { saveButton.disabled = false; }
       });
     },
   });
@@ -332,39 +353,42 @@ function openRenameModal(cfg, c) {
     `,
     footHtml: `<button class="btn btn-primary btn-block" data-save>Lưu thay đổi</button>`,
     onMount(sheet, closeFn) {
-      sheet.querySelector('[data-save]').addEventListener('click', async () => {
+      sheet.querySelector('[data-save]').addEventListener('click', async (event) => {
+        const saveButton = event.currentTarget;
+        if (saveButton.disabled) return;
         const name = sheet.querySelector('#counterpart-name').value.trim();
         const note = sheet.querySelector('#counterpart-note').value.trim();
         const errEl = sheet.querySelector('#counterpart-error');
+        saveButton.disabled = true;
         try {
           await cfg.api.updateCounterpart(c.id, { name, note });
           toast('Đã lưu', 'success');
           closeFn();
           openCounterpartDetail(c.id, cfg);
         } catch (err) { errEl.textContent = err.message || 'Có lỗi xảy ra'; errEl.style.display = 'block'; }
+        finally { saveButton.disabled = false; }
       });
     },
   });
 }
 
-/** Ô "Đưa vào thu/chi" dùng chung cho form ghi tăng/giảm/sửa dòng — mặc định KHÔNG tích, tích vào
+/** Ô "Ghi nhận dòng tiền" dùng chung cho form ghi tăng/giảm/sửa dòng — mặc định KHÔNG tích, tích vào
  * mới tự tạo giao dịch thật + hiện thêm ô chọn danh mục (đúng loại thu/chi truyền vào categoryType).
  * idPrefix để tránh trùng id khi nhiều form trên cùng trang. */
-function addToTxnFieldsHtml(idPrefix, checked, categoryType, label) {
-  const catOptions = `<option value="">Không chọn</option>` + S.listCategories({ type: categoryType }).map((cat) => `<option value="${cat.id}">${cat.name}</option>`).join('');
+function addToTxnFieldsHtml(idPrefix, checked, categoryType, label, shared = false) {
   return `
-    <label class="flex items-center gap-8 mb-16" style="cursor:pointer">
-      <input type="checkbox" id="${idPrefix}-add-txn" ${checked ? 'checked' : ''}/>
-      <span class="text-sm">${label}</span>
-    </label>
-    <div class="field" id="${idPrefix}-cat-field" style="display:${checked ? '' : 'none'}">
-      <label>Danh mục (không bắt buộc)</label><select id="${idPrefix}-cat">${catOptions}</select>
-    </div>`;
+    <div class="finance-note mb-16">
+      <label class="flex items-center gap-8"><input type="checkbox" id="${idPrefix}-add-txn" ${checked ? 'checked' : ''} ${!shared && !checked ? 'disabled' : ''}/>
+      <span>${categoryType === 'income' ? 'Tiền thực nhận vào quỹ' : 'Tiền thực chi từ quỹ'}</span></label>
+      <p style="margin-top:8px">${shared ? 'Tích khi có chuyển tiền thực tế. Bỏ tích nếu chỉ ghi nợ cũ, mua/bán chịu hoặc điều chỉnh công nợ không phát sinh tiền.' : 'Khoản riêng chỉ theo dõi công nợ cá nhân, không làm thay đổi quỹ chung.'} Tiền gốc không tính vào doanh thu/chi phí. Lãi vay ghi riêng thành khoản chi.</p>
+    </div>
+    <div id="${idPrefix}-cat-field" hidden><select id="${idPrefix}-cat"><option value="">Công nợ</option></select></div>`;
 }
+
 function bindAddToTxnToggle(sheet, idPrefix) {
   const cb = sheet.querySelector(`#${idPrefix}-add-txn`);
   const field = sheet.querySelector(`#${idPrefix}-cat-field`);
-  cb.addEventListener('change', () => { field.style.display = cb.checked ? '' : 'none'; });
+  cb.addEventListener('change', () => { field.hidden = true; });
 }
 
 function openDecreaseModal(cfg, c, balance) {
@@ -378,14 +402,16 @@ function openDecreaseModal(cfg, c, balance) {
         <div class="field-hint">Tối đa ${formatVND(Math.max(0, balance))} (nợ còn lại)</div>
       </div>
       <div class="field"><label>${cfg.decreaseDateLabel}</label><input id="pay-date" type="date" value="${new Date().toISOString().slice(0, 10)}"/></div>
-      ${addToTxnFieldsHtml('pay', false, cfg.decreaseTxnType, cfg.decreaseTxnLabel)}
+      ${addToTxnFieldsHtml('pay', !!cfg.shared, cfg.decreaseTxnType, cfg.decreaseTxnLabel, cfg.shared)}
       <div class="field-error" id="pay-error" style="display:none;margin-bottom:10px"></div>
     `,
     footHtml: `<button class="btn btn-primary btn-block" data-ok>${cfg.decreaseSubmitLabel}</button>`,
     onMount(sheet, closeFn) {
       attachMoneyInput(sheet.querySelector('#pay-amount'));
       bindAddToTxnToggle(sheet, 'pay');
-      sheet.querySelector('[data-ok]').addEventListener('click', async () => {
+      sheet.querySelector('[data-ok]').addEventListener('click', async (event) => {
+        const saveButton = event.currentTarget;
+        if (saveButton.disabled) return;
         const amount = unformatMoney(sheet.querySelector('#pay-amount').value);
         const date = sheet.querySelector('#pay-date').value;
         const addToTransactions = sheet.querySelector('#pay-add-txn').checked;
@@ -396,6 +422,7 @@ function openDecreaseModal(cfg, c, balance) {
           errEl.style.display = 'block';
           return;
         }
+        saveButton.disabled = true;
         try {
           const result = await cfg.api.addDecrease(c.id, { amount, date, categoryId, addToTransactions });
           toast(`Đã ${cfg.decreaseEntryLabel.toLowerCase()}`, 'success');
@@ -409,6 +436,7 @@ function openDecreaseModal(cfg, c, balance) {
             });
           }
         } catch (err) { errEl.textContent = err.message || 'Có lỗi xảy ra'; errEl.style.display = 'block'; }
+        finally { saveButton.disabled = false; }
       });
     },
   });
@@ -488,7 +516,7 @@ function openIncreaseForm(cfg, { counterpartId, counterpartName } = {}) {
       <div class="field"><label>${cfg.increaseDateLabel}</label><input id="incr-date" type="date" value="${new Date().toISOString().slice(0, 10)}" required/></div>
       <div class="field"><label>${cfg.increaseDescLabel}</label><input id="incr-desc" placeholder="${cfg.increaseDescPlaceholder}"/></div>
       <div class="field"><label>${cfg.increaseAmountLabel}</label><input id="incr-amount" type="text" inputmode="numeric" required/></div>
-      ${addToTxnFieldsHtml('incr', false, cfg.increaseTxnType, cfg.increaseTxnLabel)}
+      ${addToTxnFieldsHtml('incr', !!cfg.shared, cfg.increaseTxnType, cfg.increaseTxnLabel, cfg.shared)}
       <div class="field-error" id="incr-error" style="display:none;margin-bottom:10px"></div>
     `,
     footHtml: `<button class="btn btn-primary btn-block" data-save>${cfg.increaseSubmitLabel}</button>`,
@@ -496,7 +524,9 @@ function openIncreaseForm(cfg, { counterpartId, counterpartName } = {}) {
       attachMoneyInput(sheet.querySelector('#incr-amount'));
       bindAddToTxnToggle(sheet, 'incr');
       if (!locked) bindCounterpartNameSuggestions(cfg, sheet, 'incr-counterpart-name', 'incr-counterpart-list', 'incr-counterpart-toggle');
-      sheet.querySelector('[data-save]').addEventListener('click', async () => {
+      sheet.querySelector('[data-save]').addEventListener('click', async (event) => {
+        const saveButton = event.currentTarget;
+        if (saveButton.disabled) return;
         const nameVal = locked ? counterpartName : sheet.querySelector('#incr-counterpart-name').value.trim();
         const date = sheet.querySelector('#incr-date').value;
         const description = sheet.querySelector('#incr-desc').value.trim();
@@ -510,12 +540,14 @@ function openIncreaseForm(cfg, { counterpartId, counterpartName } = {}) {
           [cfg.api.counterpartNameKey]: locked ? undefined : nameVal,
           amount, date, description, categoryId, addToTransactions,
         };
+        saveButton.disabled = true;
         try {
           await cfg.api.addIncrease(payload);
           toast(`Đã ${cfg.increaseSubmitLabel.toLowerCase()}`, 'success');
           closeFn();
           if (locked) openCounterpartDetail(counterpartId, cfg);
         } catch (err) { errEl.textContent = err.message || 'Có lỗi xảy ra'; errEl.style.display = 'block'; }
+        finally { saveButton.disabled = false; }
       });
     },
   });

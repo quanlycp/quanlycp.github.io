@@ -7,12 +7,12 @@ import { BUILD_VERSION } from '../buildInfo.js';
 // trong 4 mục đầu; còn lại tự động gộp vào "Thêm".
 export const NAV = [
   { path: '#/', label: 'Tổng quan', shortLabel: 'Tổng quan', icon: 'chart' },
-  { path: '#/giao-dich', label: 'Giao dịch', shortLabel: 'Giao dịch', icon: 'wallet' },
-  { path: '#/bao-cao', label: 'Báo cáo', shortLabel: 'Báo cáo', icon: 'trendingUp' },
+  { path: '#/giao-dich', label: 'Sổ dòng tiền', shortLabel: 'Dòng tiền', icon: 'wallet' },
+  { path: '#/bao-cao', label: 'Tổng kết tháng', shortLabel: 'Tổng kết', icon: 'trendingUp' },
+  { path: '#/no', label: 'Công nợ', shortLabel: 'Công nợ', icon: 'creditCard' },
   { path: '#/ke-hoach', label: 'Kế hoạch & Tiết kiệm', shortLabel: 'Kế hoạch', icon: 'calendar' },
   { path: '#/danh-muc', label: 'Danh mục', shortLabel: 'Danh mục', icon: 'tag' },
   { path: '#/dinh-ky', label: 'Định kỳ', shortLabel: 'Định kỳ', icon: 'refresh' },
-  { path: '#/no', label: 'Công nợ', shortLabel: 'Công nợ', icon: 'creditCard' },
   { path: '#/thong-bao', label: 'Thông báo', shortLabel: 'Thông báo', icon: 'bell' },
 ];
 export const NAV_OWNER_ONLY = [

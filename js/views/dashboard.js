@@ -17,6 +17,8 @@ export function render(contentEl) {
   const session = S.getSession();
   const user = S.getUser(session.id);
   const { income, expense, balance } = S.totalsForMonth(year, month);
+  const position = S.financialPosition();
+  const monthly = S.financialMonth(year, month);
   const forecast = S.forecastExpense(year, month, now);
   const budgetRows = S.budgetOverviewForMonth(year, month).filter((r) => r.limit != null);
   const overBudget = budgetRows.filter((r) => r.over);
@@ -25,32 +27,35 @@ export function render(contentEl) {
   const recent = S.listTransactions({}).slice(0, 6);
 
   contentEl.innerHTML = `
-    <div class="card card-pad mb-16">
-      <div class="text-sm text-muted">Xin chào,</div>
-      <div class="fw-700" style="font-size:17px;margin-bottom:14px">${user ? user.name : ''} · ${MONTH_NAMES[month - 1]}</div>
-      <div class="grid-4 dash-stats">
-        <div class="stat-tile c-blue">
-          <div class="stat-icon">${icon('trendingUp', 'icon-sm')}</div>
-          <div class="stat-label">Tổng thu</div>
-          <div class="stat-value" style="font-size:15px">${formatVND(income)}</div>
-        </div>
-        <div class="stat-tile c-pink">
-          <div class="stat-icon">${icon('trendingDown', 'icon-sm')}</div>
-          <div class="stat-label">Tổng chi</div>
-          <div class="stat-value" style="font-size:15px">${formatVND(expense)}</div>
-        </div>
-        <div class="stat-tile ${balance >= 0 ? 'c-green' : 'c-orange'}">
-          <div class="stat-icon">${icon('wallet', 'icon-sm')}</div>
-          <div class="stat-label">Số dư tháng này</div>
-          <div class="stat-value" style="font-size:15px">${formatVND(balance)}</div>
-        </div>
-        <div class="stat-tile c-purple">
-          <div class="stat-icon">${icon('chart', 'icon-sm')}</div>
-          <div class="stat-label">Dự báo chi cuối tháng</div>
-          <div class="stat-value" style="font-size:${forecast == null ? '12.5px' : '15px'}">${forecast == null ? 'Chưa đủ dữ liệu (từ ngày 3)' : formatVND(forecast)}</div>
-        </div>
-      </div>
+
+    <div class="finance-heading"><div><div class="text-sm text-muted">QUỸ CHUNG · ${MONTH_NAMES[month - 1]} ${year}</div><h2>Tài chính trong tầm tay</h2></div><a class="btn btn-outline" href="#/bao-cao">Xem báo cáo ${icon('chevronRight', 'icon-sm')}</a></div>
+    <section class="finance-hero mb-16" aria-label="Số dư quỹ chung">
+      <div class="finance-hero-top"><span>${icon('wallet')} Số dư thực tế</span><span class="finance-chip">Lũy kế đến hôm nay</span></div>
+      <div class="finance-cash">${formatVND(position.closingBalance)}</div>
+      <p>Tiền hiện có, đã tính tiền vay và các khoản trả gốc.</p>
+      <div class="finance-hero-footer"><span>Chênh lệch thu–chi tháng này</span><strong>${formatVND(balance)}</strong></div>
+    </section>
+    <div class="finance-debts mb-16">
+      <a href="#/no" id="go-payable" class="card finance-debt"><span class="finance-icon payable">${icon('creditCard')}</span><div><span class="text-sm text-muted">Nợ phải trả · quỹ chung</span><strong>${formatVND(position.payable)}</strong><small>Tiếp tục theo dõi đến khi trả hết</small></div>${icon('chevronRight', 'icon-sm')}</a>
+      <a href="#/no" id="go-receivable" class="card finance-debt"><span class="finance-icon receivable">${icon('trendingUp')}</span><div><span class="text-sm text-muted">Nợ phải thu · quỹ chung</span><strong>${formatVND(position.receivable)}</strong><small>Chưa cộng vào tiền hiện có</small></div>${icon('chevronRight', 'icon-sm')}</a>
     </div>
+    <div class="finance-actions mb-16">
+      <button class="btn btn-primary" id="quick-expense">${icon('plus', 'icon-sm')} Ghi chi tiêu</button>
+      <button class="btn btn-outline" id="quick-income">${icon('trendingUp', 'icon-sm')} Ghi thu nhập</button>
+      <button class="btn btn-outline" id="quick-borrow">${icon('creditCard', 'icon-sm')} Mượn tiền</button>
+      <button class="btn btn-outline" id="quick-repay">${icon('check', 'icon-sm')} Trả gốc</button>
+    </div>
+    <section class="card card-pad mb-16">
+      <div class="section-head"><h2>Thu–chi ${MONTH_NAMES[month - 1].toLowerCase()}</h2><span class="text-sm text-muted">Không gồm tiền gốc vay/nợ</span></div>
+      <div class="grid-4 dash-stats">
+        <div class="stat-tile c-blue"><div class="stat-icon">${icon('trendingUp', 'icon-sm')}</div><div class="stat-label">Doanh thu / thu nhập</div><div class="stat-value">${formatVND(income)}</div></div>
+        <div class="stat-tile c-pink"><div class="stat-icon">${icon('trendingDown', 'icon-sm')}</div><div class="stat-label">Chi phí</div><div class="stat-value">${formatVND(expense)}</div></div>
+        <div class="stat-tile ${balance >= 0 ? 'c-green' : 'c-orange'}"><div class="stat-icon">${icon('wallet', 'icon-sm')}</div><div class="stat-label">Chênh lệch thu–chi</div><div class="stat-value">${formatVND(balance)}</div></div>
+        <div class="stat-tile c-purple"><div class="stat-icon">${icon('chart', 'icon-sm')}</div><div class="stat-label">Dự báo chi cuối tháng</div><div class="stat-value">${forecast == null ? 'Chưa đủ dữ liệu' : formatVND(forecast)}</div></div>
+      </div>
+      <div class="finance-footnote">Số dư đầu tháng: <b>${formatVND(monthly.openingBalance)}</b> · Tiền và công nợ tự chuyển tiếp sang kỳ sau.</div>
+      ${!S.listTransactions().some(t => S.getTransactionKind(t) === 'opening') ? '<button class="finance-text-button" id="add-opening">+ Khai báo số dư có trước khi ghi sổ</button>' : ''}
+    </section>
 
     ${reminders.length ? `
     <div class="card card-pad mb-16" style="background:var(--warning-bg);border-color:transparent">
@@ -88,6 +93,15 @@ export function render(contentEl) {
     </div>
   `;
 
+  contentEl.querySelector('#quick-expense').onclick = () => openTransactionForm({ defaultType: 'expense' });
+  contentEl.querySelector('#quick-income').onclick = () => openTransactionForm({ defaultType: 'income' });
+  contentEl.querySelector('#quick-borrow').onclick = () => openTransactionForm({ defaultSpecial: 'borrow' });
+  contentEl.querySelector('#quick-repay').onclick = () => openTransactionForm({ defaultSpecial: 'repay' });
+  contentEl.querySelector('#go-payable').onclick = () => sessionStorage.setItem('finance-debt-tab', 'sharedOwe');
+  contentEl.querySelector('#go-receivable').onclick = () => sessionStorage.setItem('finance-debt-tab', 'sharedReceivable');
+  const openingButton = contentEl.querySelector('#add-opening');
+  if (openingButton) openingButton.onclick = () => openTransactionForm({ opening: true, defaultType: 'income' });
+
   if (!S.listCategories().length) {
     contentEl.insertAdjacentHTML('afterbegin', `<div class="card card-pad mb-16">${emptyState({ iconName: 'wallet', title: 'Chưa có danh mục nào', message: 'Vào trang Danh mục để tạo danh mục thu/chi trước khi bắt đầu ghi sổ.' })}</div>`);
   }
@@ -118,7 +132,7 @@ function transactionRowHtml(t) {
     <div class="list-row">
       <div class="row-thumb" style="background:${cat ? cat.color : colorFor(t.categoryId || 'x')}">${icon(cat ? cat.icon : 'tag', 'icon-sm')}</div>
       <div class="row-main">
-        <div class="row-title">${cat ? cat.name : 'Không rõ danh mục'}</div>
+        <div class="row-title">${['income', 'expense'].includes(S.getTransactionKind(t)) ? (cat ? cat.name : S.transactionLabel(t)) : S.transactionLabel(t)}</div>
         <div class="row-sub">${t.note ? t.note + ' · ' : ''}${formatDate(t.date)}</div>
       </div>
       <div class="row-end"><span class="amount" style="color:${isExpense ? 'var(--danger)' : 'var(--success)'}">${isExpense ? '-' : '+'}${formatVND(t.amount)}</span></div>

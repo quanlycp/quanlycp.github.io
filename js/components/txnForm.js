@@ -17,34 +17,37 @@ import { formatNumber, formatVND, attachMoneyInput, unformatMoney } from '../uti
 /**
  * opts: { transaction? (sửa nếu có), defaultType?, onSaved? }
  */
-export function openTransactionForm({ transaction, defaultType = 'expense', onSaved } = {}) {
+export function openTransactionForm({ transaction, defaultType = 'expense', defaultSpecial, opening = false, onSaved } = {}) {
   let type = transaction ? transaction.type : defaultType;
   const isAddMode = !transaction;
+  const lockedKind = transaction && !['income', 'expense'].includes(S.getTransactionKind(transaction));
+  if (defaultSpecial) type = defaultSpecial === 'borrow' ? 'income' : 'expense';
 
   function categoryOptionsHtml() {
-    return S.listCategories({ type }).map((c) => `<option value="${c.id}" ${transaction?.categoryId === c.id ? 'selected' : ''}>${c.name}</option>`).join('');
+    return S.listCategories({ type }).filter(c => !transaction || lockedKind || !c.special).map((c) => `<option value="${c.id}" ${(transaction?.categoryId === c.id || (!transaction && defaultSpecial && c.special === defaultSpecial)) ? 'selected' : ''}>${c.name}</option>`).join('');
   }
 
   const close = openModal({
-    title: transaction ? 'Sửa giao dịch' : 'Thêm giao dịch',
+    title: opening ? 'Số dư ban đầu' : transaction ? 'Sửa giao dịch' : 'Thêm giao dịch',
     bodyHtml: `
-      <div class="tabs mb-16">
-        <button type="button" data-type="expense" class="${type === 'expense' ? 'active' : ''}">Khoản chi</button>
-        <button type="button" data-type="income" class="${type === 'income' ? 'active' : ''}">Khoản thu</button>
+      <div class="tabs mb-16" style="${lockedKind ? 'display:none' : ''}">
+        <button type="button" data-type="expense" class="${type === 'expense' ? 'active' : ''}">${opening ? 'Số dư âm' : 'Tiền ra'}</button>
+        <button type="button" data-type="income" class="${type === 'income' ? 'active' : ''}">${opening ? 'Số dư dương' : 'Tiền vào'}</button>
       </div>
       <form id="txn-form">
+        ${opening ? '<p class="finance-note mb-16">Nhập số tiền có trước khi bắt đầu ghi sổ. Chọn ngày trước giao dịch đầu tiên. Khoản này không tính vào doanh thu/chi phí; chỉ nhập một lần để tránh cộng trùng.</p>' : ''}
         <div class="field">
           <label>Số tiền</label>
           <input name="amount" id="txn-amount" type="text" inputmode="numeric" required value="${transaction ? formatNumber(transaction.amount) : ''}" placeholder="0"/>
         </div>
         <div class="field">
           <label>Danh mục</label>
-          <select name="categoryId" id="txn-cat-select" required>${categoryOptionsHtml()}</select>
+          <select name="categoryId" id="txn-cat-select" ${lockedKind || opening ? 'disabled' : 'required'}>${lockedKind && !transaction.categoryId ? '<option value="">Công nợ / số dư ban đầu</option>' : categoryOptionsHtml()}</select>
         </div>
         <div id="txn-debt-fields"></div>
         <div class="field">
           <label>Ngày</label>
-          <input name="date" type="date" required value="${transaction ? transaction.date : new Date().toISOString().slice(0, 10)}"/>
+          <input name="date" type="date" required value="${transaction ? transaction.date : opening ? (S.listTransactions().map(t => t.date).sort()[0] || S.localDate()) : S.localDate()}"/>
         </div>
         <div class="field">
           <label>Ghi chú</label>
@@ -61,7 +64,8 @@ export function openTransactionForm({ transaction, defaultType = 'expense', onSa
       attachMoneyInput(sheet.querySelector('#txn-amount'));
 
       function renderDebtFields() {
-        if (!isAddMode) { debtFieldsEl.innerHTML = ''; return; }
+        if (opening) { debtFieldsEl.innerHTML = ''; return; }
+        if (!isAddMode) { debtFieldsEl.innerHTML = lockedKind ? '<p class="finance-note mb-16">' + S.transactionLabel(transaction) + ' · Không tính vào doanh thu/chi phí.</p>' : ''; return; }
         const category = S.getCategory(catSelect.value);
         if (category?.special === 'borrow') debtFieldsEl.innerHTML = borrowFieldsHtml();
         else if (category?.special === 'repay') debtFieldsEl.innerHTML = repayFieldsHtml();
@@ -98,7 +102,9 @@ export function openTransactionForm({ transaction, defaultType = 'expense', onSa
         errEl.style.display = 'none';
         btn.disabled = true;
         try {
-          if (isAddMode && category?.special === 'borrow') {
+          if (opening) {
+            await S.addTransaction({ type, amount, date, note: note || 'Số dư ban đầu', cashKind: 'opening' });
+          } else if (isAddMode && category?.special === 'borrow') {
             await submitBorrow(sheet, { amount, date, description: note, categoryId });
           } else if (isAddMode && category?.special === 'repay') {
             await submitRepay(sheet, { amount, date, description: note, categoryId });
@@ -150,7 +156,7 @@ function borrowFieldsHtml() {
         <label>Mượn của thành viên nào</label>
         <select id="debt-member-select">${members.map((u) => `<option value="${u.id}">${u.name}</option>`).join('')}</select>
       </div>` : ''}
-      <p class="text-sm text-muted" style="margin:0">Tự ghi vào <b>Công nợ → Nợ chung</b> — mọi thành viên đều xem/sửa được.</p>
+      <p class="text-sm text-muted" style="margin:0">Tăng số dư tiền và nợ phải trả của quỹ. <b>Không tính vào doanh thu.</b> Mọi thành viên cùng theo dõi trong Công nợ.</p>
     </div>
   `;
 }
@@ -165,13 +171,13 @@ function repayFieldsHtml() {
   const optionsHtml = sharedDebts.map((c) => `<option value="${c.id}" data-balance="${c.balance}">${c.name} — còn ${formatVND(c.balance)}</option>`).join('');
   return `
     <div class="field">
-      <label>Trả cho khoản nợ nào</label>
+      <p class="finance-note mb-12">Trả gốc làm giảm số dư tiền và công nợ, không tính vào chi phí. Nếu trả lãi, ghi riêng khoản chi lãi vay.</p><label>Trả cho khoản nợ nào</label>
       <select id="debt-repay-select">
         <option value="">Trả khoản nợ khác (không theo dõi trong Công nợ)</option>
         ${optionsHtml}
       </select>
       <div class="field-hint" id="debt-repay-hint" style="display:none"></div>
-      ${!sharedDebts.length ? `<div class="field-hint">Chưa có khoản Nợ chung nào đang theo dõi — chọn "Mượn nợ" ở khoản thu trước, hoặc cứ ghi khoản chi này bình thường.</div>` : ''}
+      ${!sharedDebts.length ? `<div class="field-hint">Chưa có khoản Nợ chung nào đang theo dõi — chọn "Mượn nợ" ở khoản thu trước, hoặc ghi khoản trả gốc chưa được theo dõi.</div>` : ''}
     </div>
   `;
 }

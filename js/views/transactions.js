@@ -18,7 +18,7 @@ function currentMonthValue() {
 let filters = { type: '', categoryId: '', userId: '', q: '', month: currentMonthValue() };
 
 export function renderHeader(headerEl) {
-  headerEl.innerHTML = pageHeader({ title: 'Giao dịch' });
+  headerEl.innerHTML = pageHeader({ title: 'Sổ dòng tiền' });
 }
 
 export function render(contentEl, filterEl) {
@@ -48,8 +48,8 @@ function renderFilterBar(contentEl, filterEl) {
       </div>
       <select id="f-type" class="pill-select">
         <option value="">Tất cả</option>
-        <option value="expense" ${filters.type === 'expense' ? 'selected' : ''}>Khoản chi</option>
-        <option value="income" ${filters.type === 'income' ? 'selected' : ''}>Khoản thu</option>
+        <option value="expense" ${filters.type === 'expense' ? 'selected' : ''}>Tiền ra</option>
+        <option value="income" ${filters.type === 'income' ? 'selected' : ''}>Tiền vào</option>
       </select>
       <select id="f-cat" class="pill-select">
         <option value="">Mọi danh mục</option>
@@ -90,8 +90,7 @@ function renderList(contentEl) {
     range = S.monthRange(y, m);
   }
   const list = S.listTransactions({ ...filters, from: range?.from, to: range?.to });
-  const totalExpense = list.filter((t) => t.type === 'expense').reduce((s, t) => s + t.amount, 0);
-  const totalIncome = list.filter((t) => t.type === 'income').reduce((s, t) => s + t.amount, 0);
+  const { income: totalIncome, expense: totalExpense, cashIn, cashOut, cashChange } = S.summarizeCash(list);
   const monthLabel = filters.month ? `Tháng ${Number(filters.month.split('-')[1])}/${filters.month.split('-')[0]}` : '';
 
   // Nhóm theo ngày để dễ theo dõi (danh sách đã sắp xếp mới nhất trước).
@@ -105,10 +104,11 @@ function renderList(contentEl) {
   contentEl.innerHTML = `
     <div class="card card-pad mb-16">
       ${monthLabel ? `<div class="fw-700 text-sm mb-8">${monthLabel}</div>` : ''}
-      <div class="oc-line"><span>Tổng thu</span><b style="color:var(--success)">+${formatVND(totalIncome)}</b></div>
-      <div class="oc-line"><span>Tổng chi</span><b style="color:var(--danger)">-${formatVND(totalExpense)}</b></div>
-      <div class="oc-line"><span>Số dư</span><b style="color:${totalIncome - totalExpense >= 0 ? 'var(--success)' : 'var(--danger)'}">${formatVND(totalIncome - totalExpense)}</b></div>
+      <div class="oc-line"><span>Doanh thu / thu nhập</span><b style="color:var(--success)">+${formatVND(totalIncome)}</b></div>
+      <div class="oc-line"><span>Chi phí</span><b style="color:var(--danger)">-${formatVND(totalExpense)}</b></div>
+      <div class="oc-line"><span>Chênh lệch thu–chi</span><b style="color:${totalIncome - totalExpense >= 0 ? 'var(--success)' : 'var(--danger)'}">${formatVND(totalIncome - totalExpense)}</b></div>
     </div>
+    <div class="finance-note mb-16">Theo bộ lọc: tiền vào <b>${formatVND(cashIn)}</b> · tiền ra <b>${formatVND(cashOut)}</b> · biến động tiền <b>${formatVND(cashChange)}</b>. Số dư lũy kế xem ở Tổng quan.</div>
     ${list.length ? groups.map((g) => `
       <div class="mb-16">
         <div class="text-sm fw-700 text-muted mb-6">${formatDate(g.date)}</div>
@@ -132,7 +132,7 @@ function transactionRowHtml(t) {
     <div class="list-row" data-txn="${t.id}" style="cursor:pointer">
       <div class="row-thumb" style="background:${cat ? cat.color : '#94a3b8'}">${icon(cat ? cat.icon : 'tag', 'icon-sm')}</div>
       <div class="row-main">
-        <div class="row-title">${cat ? cat.name : 'Không rõ danh mục'}</div>
+        <div class="row-title">${['income', 'expense'].includes(S.getTransactionKind(t)) ? (cat ? cat.name : S.transactionLabel(t)) : S.transactionLabel(t)}</div>
         <div class="row-sub">${t.note ? t.note + ' · ' : ''}${user ? user.name : ''}</div>
       </div>
       <div class="row-end"><span class="amount" style="color:${isExpense ? 'var(--danger)' : 'var(--success)'}">${isExpense ? '-' : '+'}${formatVND(t.amount)}</span></div>
@@ -145,7 +145,7 @@ function openTxnDetail(t) {
   openModal({
     title: 'Giao dịch',
     bodyHtml: `
-      <div class="oc-line"><span>Danh mục</span><b>${cat ? cat.name : 'Không rõ danh mục'}</b></div>
+      <p class="finance-note mb-12">${S.transactionLabel(t)}${!['income', 'expense'].includes(S.getTransactionKind(t)) ? ' · Không tính vào doanh thu/chi phí' : ''}</p><div class="oc-line"><span>Danh mục</span><b>${cat ? cat.name : 'Không rõ danh mục'}</b></div>
       <div class="oc-line"><span>Số tiền</span><b>${formatVND(t.amount)}</b></div>
       <div class="oc-line"><span>Ngày</span><b>${formatDate(t.date)}</b></div>
       ${t.note ? `<div class="oc-line"><span>Ghi chú</span><b>${t.note}</b></div>` : ''}

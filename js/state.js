@@ -4,6 +4,7 @@
 import { genId, colorAt, formatVND } from './utils.js';
 import { getSupabaseClient, callLoginFunction, callAccountFunction } from './lib/supabaseClient.js';
 import { subscribeThisDevice, unsubscribeThisDevice, getCurrentEndpoint } from './lib/push.js';
+import { transactionKind, summarizeTransactions, financePeriod, FINANCE_LABELS } from './lib/finance.js';
 
 export const STORAGE_KEY = 'chitieu_v1';
 
@@ -794,7 +795,7 @@ export async function moveCategory(id, direction) {
 // Giao dịch (thu/chi)
 // ------------------------------------------------------------
 export function listTransactions(filters = {}) {
-  let list = state.transactions;
+  let list = state.transactions.filter(t => !/^txn_private_/.test(t.id));
   if (filters.type) list = list.filter((t) => t.type === filters.type);
   if (filters.categoryId) list = list.filter((t) => t.categoryId === filters.categoryId);
   if (filters.userId) list = list.filter((t) => t.userId === filters.userId);
@@ -807,14 +808,33 @@ export function listTransactions(filters = {}) {
   return list.slice().sort((a, b) => (b.date).localeCompare(a.date) || new Date(b.createdAt) - new Date(a.createdAt));
 }
 export function getTransaction(id) { return state.transactions.find((t) => t.id === id); }
+export function getTransactionKind(t) { return transactionKind(state, t); }
+export function transactionLabel(t) { return FINANCE_LABELS[getTransactionKind(t)] || 'Giao dịch'; }
+export function summarizeCash(list) { return summarizeTransactions(state, list); }
+export function financialPosition(to = localDate()) { return financePeriod(state, '0000-01-01', to); }
+export function financialMonth(year, month) {
+  const { from, to } = monthRange(year, month);
+  return financePeriod(state, from, to);
+}
+export function localDate() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+function cashTransactionId(kind, shared) { return genId(`txn_${shared ? '' : 'private_'}${kind}`); }
 
-export async function addTransaction({ type, amount, categoryId, note, date, recurringId }) {
+export async function addTransaction({ type, amount, categoryId, note, date, recurringId, cashKind }) {
   const session = getSession();
+  if (cashKind === 'opening') {
+    if (state.transactions.some(t => getTransactionKind(t) === 'opening')) throw new Error('Đã có số dư ban đầu. Hãy sửa khoản đó trong Sổ dòng tiền.');
+    const firstDate = listTransactions().map(t => t.date).sort()[0];
+    if (firstDate && date > firstDate) throw new Error('Ngày số dư ban đầu phải trước hoặc cùng ngày giao dịch đầu tiên: ' + firstDate);
+  }
+  if (!Number.isFinite(Number(amount)) || !(Number(amount) > 0)) throw new Error('Số tiền phải lớn hơn 0.');
   const sb = getSupabaseClient(session?.sbToken);
   const createdAt = new Date().toISOString(); // ghi sẵn NGAY LÚC NÀY — dù lát nữa mới đồng bộ được
   // (mất mạng) thì thời điểm hiển thị vẫn đúng lúc thao tác thật, không phải lúc có mạng lại.
   const row = {
-    id: genId('txn'), type, amount: Number(amount) || 0, category_id: categoryId || null,
+    id: cashKind === 'opening' ? cashTransactionId('opening', true) : genId('txn'), type, amount: Number(amount) || 0, category_id: categoryId || null,
     note: note || '', txn_date: date || new Date().toISOString().slice(0, 10),
     user_id: session.id, recurring_id: recurringId || null, created_at: createdAt,
   };
@@ -845,6 +865,11 @@ export async function updateTransaction(id, { type, amount, categoryId, note, da
   const session = getSession();
   const sb = getSupabaseClient(session?.sbToken);
   const newAmount = Number(amount) || 0;
+  if (!Number.isFinite(newAmount) || newAmount <= 0) throw new Error('Số tiền phải lớn hơn 0.');
+  const original = getTransaction(id);
+  if (original && !['income', 'expense'].includes(getTransactionKind(original))) {
+    type = original.type; categoryId = original.categoryId;
+  }
   const linked = findLinkedDebtOrReceivableEntry(id);
   // Giao dịch này có kèm 1 dòng Công nợ (Mượn nợ/Trả nợ, hoặc Cho vay/Thu tiền có tích "đưa vào thu/
   // chi") -> dòng "GIẢM nợ" (trả nợ/thu tiền) sửa số tiền ở đây vẫn KHÔNG được vượt quá nợ còn lại —
@@ -853,6 +878,10 @@ export async function updateTransaction(id, { type, amount, categoryId, note, da
     const balance = linked.type === 'debt' ? creditorBalance(linked.entry.creditorId) : debtorBalance(linked.entry.debtorId);
     const maxAmount = balance + linked.entry.amount;
     if (newAmount > maxAmount) throw new Error(`Số tiền không được vượt quá ${formatVND(maxAmount)} (nợ còn lại).`);
+  }
+  if (linked && ['charge', 'lend'].includes(linked.entry.kind)) {
+    const remaining = linked.type === 'debt' ? creditorBalance(linked.entry.creditorId) : debtorBalance(linked.entry.debtorId);
+    if (remaining - linked.entry.amount + newAmount < 0) throw new Error('Số gốc không được thấp hơn phần đã thanh toán.');
   }
   const patch = { type, amount: newAmount, category_id: categoryId || null, note: note || '', txn_date: date };
   const { error } = await tryWrite(sb, 'transactions', 'update', patch, { column: 'id', value: id });
@@ -887,6 +916,10 @@ export async function deleteTransaction(id) {
   // Xóa dòng Công nợ đi kèm TRƯỚC (nếu có) -> chỉ xóa giao dịch nếu bước này thành công, tránh để
   // lại dòng Công nợ mồ côi khi thao tác nửa chừng bị lỗi mạng.
   const linked = findLinkedDebtOrReceivableEntry(id);
+  if (linked && ['charge', 'lend'].includes(linked.entry.kind)) {
+    const remaining = linked.type === 'debt' ? creditorBalance(linked.entry.creditorId) : debtorBalance(linked.entry.debtorId);
+    if (remaining < linked.entry.amount) throw new Error('Hãy xử lý các khoản thanh toán gốc trước khi xóa khoản vay.');
+  }
   if (linked) {
     const table = linked.type === 'debt' ? 'debt_entries' : 'receivable_entries';
     const { error: linkErr } = await tryWrite(sb, table, 'delete', null, { column: 'id', value: linked.entry.id });
@@ -949,8 +982,7 @@ export function monthRange(year, month) {
 export function totalsForMonth(year, month) {
   const { from, to } = monthRange(year, month);
   const list = state.transactions.filter((t) => t.date >= from && t.date <= to);
-  const income = list.filter((t) => t.type === 'income').reduce((s, t) => s + t.amount, 0);
-  const expense = list.filter((t) => t.type === 'expense').reduce((s, t) => s + t.amount, 0);
+  const { income, expense } = summarizeCash(list);
   return { income, expense, balance: income - expense };
 }
 /** Tổng chi theo từng danh mục trong tháng — Map<categoryId, số tiền>. */
@@ -958,7 +990,7 @@ export function expenseByCategoryForMonth(year, month) {
   const { from, to } = monthRange(year, month);
   const map = new Map();
   for (const t of state.transactions) {
-    if (t.type !== 'expense' || t.date < from || t.date > to) continue;
+    if (getTransactionKind(t) !== 'expense' || t.date < from || t.date > to) continue;
     map.set(t.categoryId, (map.get(t.categoryId) || 0) + t.amount);
   }
   return map;
@@ -1001,7 +1033,7 @@ export function effectiveBudget(categoryId, year, month) {
 /** Danh sách đầy đủ: mỗi danh mục chi tiêu + hạn mức đang áp dụng + đã chi trong tháng + % đã dùng. */
 export function budgetOverviewForMonth(year, month) {
   const spentMap = expenseByCategoryForMonth(year, month);
-  return listCategories({ type: 'expense' }).map((cat) => {
+  return listCategories({ type: 'expense' }).filter(cat => !cat.special).map((cat) => {
     const limit = effectiveBudget(cat.id, year, month);
     const spent = spentMap.get(cat.id) || 0;
     return { category: cat, limit, spent, percent: limit ? Math.round((spent / limit) * 100) : null, over: limit != null && spent > limit };
@@ -1413,13 +1445,14 @@ export async function addDebtCharge({ creditorId, creditorName, memberUserId, sh
   const session = getSession();
   const sb = getSupabaseClient(session?.sbToken);
   const chargeAmount = Number(amount) || 0;
-  if (chargeAmount <= 0) throw new Error('Số tiền nợ phải lớn hơn 0.');
+  if (!Number.isFinite(chargeAmount) || chargeAmount <= 0) throw new Error('Số tiền nợ phải lớn hơn 0.');
   const entryDate = date || new Date().toISOString().slice(0, 10);
-  const isShared = !!shared;
+  let isShared = !!shared;
   let creditor;
   if (creditorId) {
     creditor = getCreditor(creditorId);
     if (!creditor) throw new Error('Không tìm thấy chủ nợ.');
+    isShared = !!creditor.shared;
   } else if (memberUserId) {
     const member = getUser(memberUserId);
     if (!member) throw new Error('Không tìm thấy thành viên.');
@@ -1435,7 +1468,7 @@ export async function addDebtCharge({ creditorId, creditorName, memberUserId, sh
   if (addToTransactions) {
     const catName = getCategory(categoryId)?.name || 'Mượn nợ';
     txnRow = {
-      id: genId('txn'), type: 'income', amount: chargeAmount, category_id: categoryId || null,
+      id: cashTransactionId('borrow', isShared), type: 'income', amount: chargeAmount, category_id: categoryId || null,
       note: `${catName}: ${creditor.name}${description ? ' - ' + description : ''}`, txn_date: entryDate,
       user_id: session.id, recurring_id: null, created_at: nowIso,
     };
@@ -1479,7 +1512,7 @@ export async function addDebtPayment(creditorId, { amount, date, categoryId, des
   const session = getSession();
   const sb = getSupabaseClient(session?.sbToken);
   const payAmount = Number(amount) || 0;
-  if (payAmount <= 0) throw new Error('Số tiền trả phải lớn hơn 0.');
+  if (!Number.isFinite(payAmount) || payAmount <= 0) throw new Error('Số tiền trả phải lớn hơn 0.');
   const balance = creditorBalance(creditorId);
   if (payAmount > balance) throw new Error(`Số tiền không được vượt quá ${formatVND(balance)} (nợ còn lại).`);
   const payDate = date || new Date().toISOString().slice(0, 10);
@@ -1489,7 +1522,7 @@ export async function addDebtPayment(creditorId, { amount, date, categoryId, des
   if (addToTransactions) {
     const catName = getCategory(categoryId)?.name || 'Trả nợ';
     txnRow = {
-      id: genId('txn'), type: 'expense', amount: payAmount, category_id: categoryId || null,
+      id: cashTransactionId('repay', creditor.shared), type: 'expense', amount: payAmount, category_id: categoryId || null,
       note: `${catName}: ${creditor.name}`, txn_date: payDate, user_id: session.id, recurring_id: null, created_at: nowIso,
     };
     const { error: txnErr } = await tryWrite(sb, 'transactions', 'insert', txnRow);
@@ -1511,7 +1544,7 @@ export async function addDebtPayment(creditorId, { amount, date, categoryId, des
   // Trả cho 1 chủ nợ là thành viên trong sổ ĐÃ có mirror (đã từng mượn -> đã tự điền hộ sổ riêng của
   // họ, xem addDebtCharge) -> tự thêm dòng "collect" bên sổ riêng đó luôn, cho khớp với Nợ chung.
   // Xem giải thích queueAndKickMirror ở addDebtCharge.
-  if (creditor.memberUserId && creditor.mirrorDebtorId) {
+  if (creditor.memberUserId) {
     queueAndKickMirror({ op: 'add', creditorId: creditor.id, entryId: entry.id, debtKind: 'payment', amount: payAmount, date: payDate });
   }
 
@@ -1526,7 +1559,7 @@ export async function updateDebtEntry(id, { amount, date, description, categoryI
   const session = getSession();
   const sb = getSupabaseClient(session?.sbToken);
   const newAmount = Number(amount) || 0;
-  if (newAmount <= 0) throw new Error('Số tiền phải lớn hơn 0.');
+  if (!Number.isFinite(newAmount) || newAmount <= 0) throw new Error('Số tiền phải lớn hơn 0.');
   if (e.kind === 'payment') {
     // Dòng TRẢ nợ (giảm nợ): sửa số tiền vẫn không được vượt quá nợ còn lại — cộng lại đúng số tiền
     // CŨ của dòng này vào nợ còn lại trước (vì số cũ đã bị trừ rồi) rồi mới so sánh. VD: nợ còn
@@ -1534,6 +1567,7 @@ export async function updateDebtEntry(id, { amount, date, description, categoryI
     const maxAmount = creditorBalance(e.creditorId) + e.amount;
     if (newAmount > maxAmount) throw new Error(`Số tiền không được vượt quá ${formatVND(maxAmount)} (nợ còn lại).`);
   }
+  if (e.kind === 'charge' && creditorBalance(e.creditorId) - e.amount + newAmount < 0) throw new Error('Tiền vay không được thấp hơn số gốc đã trả.');
   const newDate = date || e.date;
   const patch = { amount: newAmount, entry_date: newDate, description: description || '' };
   const txnType = e.kind === 'charge' ? 'income' : 'expense';
@@ -1544,7 +1578,7 @@ export async function updateDebtEntry(id, { amount, date, description, categoryI
     const catName = getCategory(categoryId)?.name || (e.kind === 'charge' ? 'Mượn nợ' : 'Trả nợ');
     const note = e.kind === 'charge' ? `${catName}: ${creditor ? creditor.name : ''}${patch.description ? ' - ' + patch.description : ''}` : `${catName}: ${creditor ? creditor.name : ''}`;
     const txnRow = {
-      id: genId('txn'), type: txnType, amount: newAmount, category_id: categoryId || null,
+      id: cashTransactionId(e.kind === 'charge' ? 'borrow' : 'repay', creditor?.shared), type: txnType, amount: newAmount, category_id: categoryId || null,
       note, txn_date: newDate, user_id: session.id, recurring_id: null, created_at: new Date().toISOString(),
     };
     const { error: txnErr } = await tryWrite(sb, 'transactions', 'insert', txnRow);
@@ -1553,7 +1587,8 @@ export async function updateDebtEntry(id, { amount, date, description, categoryI
     newTransactionId = txnRow.id;
   } else if (!addToTransactions && e.transactionId) {
     // Trước đây có đưa vào thu/chi, giờ bỏ tích -> xóa giao dịch đã tạo.
-    await tryWrite(sb, 'transactions', 'delete', null, { column: 'id', value: e.transactionId });
+    const removal = await tryWrite(sb, 'transactions', 'delete', null, { column: 'id', value: e.transactionId });
+    if (removal.error) throw removal.error;
     state.transactions = state.transactions.filter((t) => t.id !== e.transactionId);
     newTransactionId = null;
   } else if (addToTransactions && e.transactionId) {
@@ -1588,12 +1623,14 @@ export async function updateDebtEntry(id, { amount, date, description, categoryI
 export async function deleteDebtEntry(id) {
   const e = state.debtEntries.find((x) => x.id === id);
   if (!e) throw new Error('Không tìm thấy dòng sổ nợ.');
+  if (e.kind === 'charge' && creditorBalance(e.creditorId) < e.amount) throw new Error('Hãy xử lý các khoản trả gốc trước khi xóa khoản vay.');
   const session = getSession();
   const sb = getSupabaseClient(session?.sbToken);
   const { error } = await tryWrite(sb, 'debt_entries', 'delete', null, { column: 'id', value: id });
   if (error) throw new Error('Không xóa được, thử lại sau.');
   if (e.transactionId) {
-    await tryWrite(sb, 'transactions', 'delete', null, { column: 'id', value: e.transactionId });
+    const removal = await tryWrite(sb, 'transactions', 'delete', null, { column: 'id', value: e.transactionId });
+    if (removal.error) throw removal.error;
     state.transactions = state.transactions.filter((t) => t.id !== e.transactionId);
   }
   state.debtEntries = state.debtEntries.filter((x) => x.id !== id);
@@ -1616,7 +1653,7 @@ export async function updateCreditor(id, { name, note }) {
   const sb = getSupabaseClient(session?.sbToken);
   const patch = { name: (name || '').trim(), note: note || '' };
   if (!patch.name) throw new Error('Cần nhập tên chủ nợ.');
-  const { error } = await sb.from('creditors').update(patch).eq('id', id);
+  const { error } = await tryWrite(sb, 'creditors', 'update', patch, { column: 'id', value: id });
   if (error) throw new Error('Không cập nhật được, thử lại sau.');
   const c = getCreditor(id);
   if (c) Object.assign(c, patch);
@@ -1632,6 +1669,7 @@ export async function deleteCreditorsByName(name, shared = false) {
   const session = getSession();
   const sb = getSupabaseClient(session?.sbToken);
   const ids = matches.map((c) => c.id);
+  if (state.debtEntries.some(e => ids.includes(e.creditorId))) throw new Error('Sổ đã có lịch sử. Hãy giữ lại để bảo toàn tổng kết các tháng.');
   const { error } = await sb.from('creditors').delete().in('id', ids);
   if (error) throw new Error('Không xóa được, thử lại sau.');
   state.creditors = state.creditors.filter((c) => !ids.includes(c.id));
@@ -1703,8 +1741,8 @@ function findOpenDebtorByName(name, { shared = false, memberUserId = null } = {}
 async function ensureDebtor(name, sb, session, { shared = false, memberUserId = null } = {}) {
   const existing = findOpenDebtorByName(name, { shared, memberUserId });
   if (existing) return existing;
-  const row = { id: genId('debtor'), name: name.trim(), note: '', user_id: session.id, shared, member_user_id: memberUserId || null };
-  const { error } = await sb.from('debtors').insert(row);
+  const row = { created_at: new Date().toISOString(), id: genId('debtor'), name: name.trim(), note: '', user_id: session.id, shared, member_user_id: memberUserId || null };
+  const { error } = await tryWrite(sb, 'debtors', 'insert', row);
   if (error) throw new Error('Không tạo được người nợ, thử lại sau.');
   const d = mapDebtorRow({ ...row, created_at: new Date().toISOString() });
   state.debtors.push(d);
@@ -1719,13 +1757,14 @@ export async function addReceivableLend({ debtorId, debtorName, memberUserId, sh
   const session = getSession();
   const sb = getSupabaseClient(session?.sbToken);
   const lendAmount = Number(amount) || 0;
-  if (lendAmount <= 0) throw new Error('Số tiền cho vay phải lớn hơn 0.');
+  if (!Number.isFinite(lendAmount) || lendAmount <= 0) throw new Error('Số tiền cho vay phải lớn hơn 0.');
   const entryDate = date || new Date().toISOString().slice(0, 10);
-  const isShared = !!shared;
+  let isShared = !!shared;
   let debtor;
   if (debtorId) {
     debtor = getDebtor(debtorId);
     if (!debtor) throw new Error('Không tìm thấy người nợ.');
+    isShared = !!debtor.shared;
   } else if (memberUserId) {
     const member = getUser(memberUserId);
     if (!member) throw new Error('Không tìm thấy thành viên.');
@@ -1739,18 +1778,18 @@ export async function addReceivableLend({ debtorId, debtorName, memberUserId, sh
   let txnRow = null;
   if (addToTransactions) {
     txnRow = {
-      id: genId('txn'), type: 'expense', amount: lendAmount, category_id: categoryId || null,
+      created_at: new Date().toISOString(), id: cashTransactionId('lend', isShared), type: 'expense', amount: lendAmount, category_id: categoryId || null,
       note: `Cho vay: ${debtor.name}${description ? ' - ' + description : ''}`, txn_date: entryDate, user_id: session.id, recurring_id: null,
     };
-    const { error: txnErr } = await sb.from('transactions').insert(txnRow);
+    const { error: txnErr } = await tryWrite(sb, 'transactions', 'insert', txnRow);
     if (txnErr) throw new Error('Không tạo được giao dịch, thử lại sau.');
   }
   const row = {
-    id: genId('recv'), debtor_id: debtor.id, kind: 'lend', amount: lendAmount,
+    created_at: new Date().toISOString(), id: genId('recv'), debtor_id: debtor.id, kind: 'lend', amount: lendAmount,
     entry_date: entryDate, description: description || '',
     transaction_id: txnRow ? txnRow.id : null, user_id: session.id, shared: isShared,
   };
-  const { error } = await sb.from('receivable_entries').insert(row);
+  const { error } = await tryWrite(sb, 'receivable_entries', 'insert', row);
   if (error) throw new Error('Không lưu được khoản cho vay, thử lại sau.');
   if (txnRow) state.transactions.unshift(mapTransactionRow({ ...txnRow, created_at: new Date().toISOString() }));
   state.receivableEntries.unshift(mapReceivableEntryRow({ ...row, created_at: new Date().toISOString() }));
@@ -1765,23 +1804,24 @@ export async function addReceivableCollect(debtorId, { amount, date, categoryId,
   const session = getSession();
   const sb = getSupabaseClient(session?.sbToken);
   const collectAmount = Number(amount) || 0;
-  if (collectAmount <= 0) throw new Error('Số tiền thu phải lớn hơn 0.');
+  if (collectAmount > debtorBalance(debtorId)) throw new Error('Số tiền thu vượt quá nợ còn lại.');
+  if (!Number.isFinite(collectAmount) || collectAmount <= 0) throw new Error('Số tiền thu phải lớn hơn 0.');
   const collectDate = date || new Date().toISOString().slice(0, 10);
 
   let txnRow = null;
   if (addToTransactions) {
     txnRow = {
-      id: genId('txn'), type: 'income', amount: collectAmount, category_id: categoryId || null,
+      created_at: new Date().toISOString(), id: cashTransactionId('collect', debtor.shared), type: 'income', amount: collectAmount, category_id: categoryId || null,
       note: `Thu nợ: ${debtor.name}`, txn_date: collectDate, user_id: session.id, recurring_id: null,
     };
-    const { error: txnErr } = await sb.from('transactions').insert(txnRow);
+    const { error: txnErr } = await tryWrite(sb, 'transactions', 'insert', txnRow);
     if (txnErr) throw new Error('Không tạo được giao dịch, thử lại sau.');
   }
   const row = {
-    id: genId('recv'), debtor_id: debtorId, kind: 'collect', amount: collectAmount,
+    created_at: new Date().toISOString(), id: genId('recv'), debtor_id: debtorId, kind: 'collect', amount: collectAmount,
     entry_date: collectDate, description: description || '', transaction_id: txnRow ? txnRow.id : null, user_id: session.id, shared: !!debtor.shared,
   };
-  const { error: entryErr } = await sb.from('receivable_entries').insert(row);
+  const { error: entryErr } = await tryWrite(sb, 'receivable_entries', 'insert', row);
   if (entryErr) throw new Error(txnRow ? 'Đã tạo giao dịch nhưng chưa lưu được vào sổ, thử lại sau.' : 'Không lưu được vào sổ, thử lại sau.');
 
   if (txnRow) state.transactions.unshift(mapTransactionRow({ ...txnRow, created_at: new Date().toISOString() }));
@@ -1797,7 +1837,9 @@ export async function updateReceivableEntry(id, { amount, date, description, cat
   const session = getSession();
   const sb = getSupabaseClient(session?.sbToken);
   const newAmount = Number(amount) || 0;
-  if (newAmount <= 0) throw new Error('Số tiền phải lớn hơn 0.');
+  if (!Number.isFinite(newAmount) || newAmount <= 0) throw new Error('Số tiền phải lớn hơn 0.');
+  if (e.kind === 'collect' && newAmount > debtorBalance(e.debtorId) + e.amount) throw new Error('Số tiền thu vượt quá nợ còn lại.');
+  if (e.kind === 'lend' && debtorBalance(e.debtorId) - e.amount + newAmount < 0) throw new Error('Tiền cho vay không được thấp hơn số gốc đã thu.');
   const newDate = date || e.date;
   const patch = { amount: newAmount, entry_date: newDate, description: description || '' };
   const txnType = e.kind === 'lend' ? 'expense' : 'income';
@@ -1807,27 +1849,28 @@ export async function updateReceivableEntry(id, { amount, date, description, cat
     // Trước đây chưa đưa vào thu/chi, giờ tích chọn -> tạo mới giao dịch.
     const note = e.kind === 'lend' ? `Cho vay: ${debtor ? debtor.name : ''}${patch.description ? ' - ' + patch.description : ''}` : `Thu nợ: ${debtor ? debtor.name : ''}`;
     const txnRow = {
-      id: genId('txn'), type: txnType, amount: newAmount, category_id: categoryId || null,
+      created_at: new Date().toISOString(), id: cashTransactionId(e.kind === 'lend' ? 'lend' : 'collect', debtor?.shared), type: txnType, amount: newAmount, category_id: categoryId || null,
       note, txn_date: newDate, user_id: session.id, recurring_id: null,
     };
-    const { error: txnErr } = await sb.from('transactions').insert(txnRow);
+    const { error: txnErr } = await tryWrite(sb, 'transactions', 'insert', txnRow);
     if (txnErr) throw new Error('Không tạo được giao dịch, thử lại sau.');
     state.transactions.unshift(mapTransactionRow({ ...txnRow, created_at: new Date().toISOString() }));
     newTransactionId = txnRow.id;
   } else if (!addToTransactions && e.transactionId) {
     // Trước đây có đưa vào thu/chi, giờ bỏ tích -> xóa giao dịch đã tạo.
-    await sb.from('transactions').delete().eq('id', e.transactionId);
+    const removal = await tryWrite(sb, 'transactions', 'delete', null, { column: 'id', value: e.transactionId });
+    if (removal.error) throw removal.error;
     state.transactions = state.transactions.filter((t) => t.id !== e.transactionId);
     newTransactionId = null;
   } else if (addToTransactions && e.transactionId) {
     // Vẫn đưa vào thu/chi -> đồng bộ số tiền/ngày cho giao dịch đã có.
-    const { error: txnErr } = await sb.from('transactions').update({ amount: newAmount, txn_date: newDate }).eq('id', e.transactionId);
+    const { error: txnErr } = await tryWrite(sb, 'transactions', 'update', { amount: newAmount, txn_date: newDate }, { column: 'id', value: e.transactionId });
     if (txnErr) throw new Error('Đã cập nhật sổ nhưng chưa đồng bộ được giao dịch, thử lại sau.');
     const t = state.transactions.find((x) => x.id === e.transactionId);
     if (t) { t.amount = newAmount; t.date = newDate; }
   }
   patch.transaction_id = newTransactionId;
-  const { error } = await sb.from('receivable_entries').update(patch).eq('id', id);
+  const { error } = await tryWrite(sb, 'receivable_entries', 'update', patch, { column: 'id', value: id });
   if (error) throw new Error('Không cập nhật được, thử lại sau.');
   Object.assign(e, { amount: newAmount, date: newDate, description: patch.description, transactionId: newTransactionId });
   notify();
@@ -1836,12 +1879,14 @@ export async function updateReceivableEntry(id, { amount, date, description, cat
 export async function deleteReceivableEntry(id) {
   const e = state.receivableEntries.find((x) => x.id === id);
   if (!e) throw new Error('Không tìm thấy dòng sổ.');
+  if (e.kind === 'lend' && debtorBalance(e.debtorId) < e.amount) throw new Error('Hãy xử lý các khoản thu gốc trước khi xóa khoản cho vay.');
   const session = getSession();
   const sb = getSupabaseClient(session?.sbToken);
-  const { error } = await sb.from('receivable_entries').delete().eq('id', id);
+  const { error } = await tryWrite(sb, 'receivable_entries', 'delete', null, { column: 'id', value: id });
   if (error) throw new Error('Không xóa được, thử lại sau.');
   if (e.transactionId) {
-    await sb.from('transactions').delete().eq('id', e.transactionId);
+    const removal = await tryWrite(sb, 'transactions', 'delete', null, { column: 'id', value: e.transactionId });
+    if (removal.error) throw removal.error;
     state.transactions = state.transactions.filter((t) => t.id !== e.transactionId);
   }
   state.receivableEntries = state.receivableEntries.filter((x) => x.id !== id);
@@ -1852,7 +1897,7 @@ export async function updateDebtor(id, { name, note }) {
   const sb = getSupabaseClient(session?.sbToken);
   const patch = { name: (name || '').trim(), note: note || '' };
   if (!patch.name) throw new Error('Cần nhập tên người nợ.');
-  const { error } = await sb.from('debtors').update(patch).eq('id', id);
+  const { error } = await tryWrite(sb, 'debtors', 'update', patch, { column: 'id', value: id });
   if (error) throw new Error('Không cập nhật được, thử lại sau.');
   const d = getDebtor(id);
   if (d) Object.assign(d, patch);
@@ -1867,6 +1912,7 @@ export async function deleteDebtorsByName(name, shared = false) {
   const session = getSession();
   const sb = getSupabaseClient(session?.sbToken);
   const ids = matches.map((d) => d.id);
+  if (state.receivableEntries.some(e => ids.includes(e.debtorId))) throw new Error('Sổ đã có lịch sử. Hãy giữ lại để bảo toàn tổng kết các tháng.');
   const { error } = await sb.from('debtors').delete().in('id', ids);
   if (error) throw new Error('Không xóa được, thử lại sau.');
   state.debtors = state.debtors.filter((d) => !ids.includes(d.id));

@@ -9,14 +9,15 @@ let cursor = new Date();
 let summaryYear = new Date().getFullYear();
 
 export function renderHeader(headerEl) {
-  headerEl.innerHTML = pageHeader({ title: 'Báo cáo' });
+  headerEl.innerHTML = pageHeader({ title: 'Tổng kết tháng' });
 }
 
 export function render(contentEl) {
   const year = cursor.getFullYear(), month = cursor.getMonth() + 1;
+  const cash = S.financialMonth(year, month);
   const spentMap = S.expenseByCategoryForMonth(year, month);
   const catRows = [...spentMap.entries()]
-    .map(([categoryId, total]) => ({ category: S.getCategory(categoryId), total }))
+    .map(([categoryId, total]) => ({ category: S.getCategory(categoryId) || { name: 'Không có danh mục', color: '#94a3b8' }, total }))
     .filter((r) => r.category)
     .sort((a, b) => b.total - a.total);
   const totalExpense = catRows.reduce((s, r) => s + r.total, 0);
@@ -26,12 +27,12 @@ export function render(contentEl) {
   // Tổng kết cả năm — chọn năm RIÊNG (summaryYear), độc lập với tháng đang
   // xem ở phần biểu đồ trên — cộng dồn số dư từng tháng thành lũy kế, để
   // nhìn được cả năm tại 1 bảng thay vì bấm từng tháng riêng lẻ.
-  let cumulative = 0;
+
   const yearRows = Array.from({ length: 12 }, (_, i) => {
     const m = i + 1;
-    const t = S.totalsForMonth(summaryYear, m);
-    cumulative += t.balance;
-    return { month: m, ...t, cumulative };
+    const t = S.financialMonth(summaryYear, m);
+
+    return { month: m, ...t };
   });
 
   contentEl.innerHTML = `
@@ -41,6 +42,20 @@ export function render(contentEl) {
       <button class="icon-btn" id="btn-next-month">${icon('chevronRight')}</button>
     </div>
 
+    <section class="card card-pad mb-16">
+      <div class="section-head"><h2>Đối chiếu dòng tiền</h2><span class="finance-badge">${MONTH_NAMES[month - 1]} ${year}</span></div>
+      <div class="finance-report-balance"><div><span>Số dư đầu kỳ</span><strong>${formatVND(cash.openingBalance)}</strong></div><span>→</span><div><span>Số dư cuối kỳ</span><strong>${formatVND(cash.closingBalance)}</strong></div></div>
+      <div class="oc-line"><span>Doanh thu / thu nhập</span><b>+${formatVND(cash.income)}</b></div>
+      <div class="oc-line"><span>Chi phí</span><b>−${formatVND(cash.expense)}</b></div>
+      <div class="oc-line"><span>Chênh lệch thu–chi</span><b>${formatVND(cash.balance)}</b></div>
+      <hr class="finance-divider">
+      <div class="oc-line"><span>Tiền vay nhận</span><b>+${formatVND(cash.borrow)}</b></div>
+      <div class="oc-line"><span>Trả nợ gốc</span><b>−${formatVND(cash.repay)}</b></div>
+      <div class="oc-line"><span>Tiền cho vay</span><b>−${formatVND(cash.lend)}</b></div>
+      <div class="oc-line"><span>Thu hồi gốc cho vay</span><b>+${formatVND(cash.collect)}</b></div>
+      ${cash.opening ? '<div class="oc-line"><span>Số dư ban đầu đã khai báo trong kỳ</span><b>' + formatVND(cash.opening) + '</b></div>' : ''}
+      <div class="finance-footnote">Nợ cuối kỳ: phải trả <b>${formatVND(cash.payable)}</b> · phải thu <b>${formatVND(cash.receivable)}</b>. Tiếp tục chuyển sang kỳ sau, không cộng vào thu–chi.</div>
+    </section>
     <div class="card card-pad mb-16">
       <div class="section-head"><h2>Chi tiêu theo danh mục</h2></div>
       ${catRows.length ? `
@@ -93,9 +108,9 @@ export function render(contentEl) {
           <button class="icon-btn" id="btn-next-year">${icon('chevronRight', 'icon-sm')}</button>
         </div>
       </div>
-      <div class="data-table-wrap">
+      <p class="finance-note mb-12">Lịch sử được lưu theo ngày giao dịch. Chọn năm để xem lại từng tháng. Số dư và công nợ cuối kỳ được chuyển tiếp cả khi sang năm mới; sửa giao dịch cũ sẽ cập nhật lại tổng kết liên quan.</p><div class="data-table-wrap">
         <table class="data-table">
-          <thead><tr><th>Tháng</th><th>Thu</th><th>Chi</th><th>Số dư</th><th>Lũy kế cả năm</th></tr></thead>
+          <thead><tr><th>Tháng</th><th>Thu nhập</th><th>Chi phí</th><th>Chênh lệch</th><th>Số dư đầu kỳ</th><th>Số dư cuối kỳ</th><th>Nợ phải trả</th><th>Nợ phải thu</th></tr></thead>
           <tbody>
             ${yearRows.map((r) => `
               <tr class="${summaryYear === year && r.month === month ? 'current-month' : ''}">
@@ -103,7 +118,7 @@ export function render(contentEl) {
                 <td style="color:var(--success)">${r.income ? formatVND(r.income) : '—'}</td>
                 <td style="color:var(--danger)">${r.expense ? formatVND(r.expense) : '—'}</td>
                 <td>${formatVND(r.balance)}</td>
-                <td>${formatVND(r.cumulative)}</td>
+                <td>${formatVND(r.openingBalance)}</td><td><b>${formatVND(r.closingBalance)}</b></td><td>${formatVND(r.payable)}</td><td>${formatVND(r.receivable)}</td>
               </tr>`).join('')}
           </tbody>
         </table>

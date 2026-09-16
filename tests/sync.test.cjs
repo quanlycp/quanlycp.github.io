@@ -13,6 +13,133 @@ const txn = (id, user = 'alice', amount = 50000) => ({ id, type: 'expense', amou
 const input = { type: 'expense', amount: 50000, categoryId: 'food', note: 'offline lunch', date: '2026-09-15' };
 function deferred() { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; }
 
+test('cash balance includes loan principal, monthly results exclude it, and debt rolls over across years', async () => {
+  const backend = new Backend();
+  const a = await createDevice(backend);
+  await a.state.refresh();
+  a.navigator.onLine = false;
+  await a.state.addTransaction({ type: 'income', amount: 5000000, date: '2026-12-01' });
+  await a.state.addTransaction({ ...input, amount: 3000000, date: '2026-12-02' });
+  const loan = await a.state.addDebtCharge({ creditorName: 'Anh A', shared: true, amount: 10000000, date: '2026-12-03', addToTransactions: true });
+  await a.state.addDebtPayment(loan.creditorId, { amount: 2000000, date: '2026-12-04', addToTransactions: true });
+  const dec = a.state.financialMonth(2026, 12);
+  assert.equal(dec.income, 5000000);
+  assert.equal(dec.expense, 3000000);
+  assert.equal(dec.balance, 2000000);
+  assert.equal(dec.closingBalance, 10000000);
+  assert.equal(dec.payable, 8000000);
+  assert.equal(a.state.expenseByCategoryForMonth(2026, 12).get('food'), 3000000);
+  const jan = a.state.financialMonth(2027, 1);
+  assert.equal(jan.income, 0);
+  assert.equal(jan.expense, 0);
+  assert.equal(jan.openingBalance, 10000000);
+  assert.equal(jan.closingBalance, 10000000);
+  assert.equal(jan.payable, 8000000);
+  const restarted = await createDevice(backend, { storage: a.storage, online: false });
+  assert.equal(restarted.state.financialMonth(2026, 12).closingBalance, 10000000);
+  restarted.navigator.onLine = true;
+  await restarted.state.refresh();
+  const b = await createDevice(backend, { id: 'bob' });
+  await b.state.refresh();
+  assert.deepEqual(clone(b.state.financialMonth(2026, 12)), clone(dec));
+  assert.equal(restarted.state.pendingSyncCount(), 0);
+});
+
+test('offline shared lending and collection survive reload, edit and deletion without operating income', async () => {
+  const backend = new Backend();
+  const a = await createDevice(backend);
+  await a.state.refresh();
+  a.navigator.onLine = false;
+  await a.state.addTransaction({ type: 'income', amount: 10000000, date: '2026-08-31', cashKind: 'opening' });
+  const lend = await a.state.addReceivableLend({ debtorName: 'Anh B', shared: true, amount: 4000000, date: '2026-09-02', addToTransactions: true });
+  await a.state.addReceivableCollect(lend.debtorId, { amount: 1000000, date: '2026-09-03', addToTransactions: true });
+  assert.equal(a.state.financialMonth(2026, 9).receivable, 3000000);
+  assert.equal(a.state.financialMonth(2026, 9).closingBalance, 7000000);
+  assert.equal(a.state.financialMonth(2026, 9).income, 0);
+  assert.equal(a.state.financialMonth(2026, 9).expense, 0);
+  await assert.rejects(a.state.addReceivableCollect(lend.debtorId, { amount: 4000000, date: '2026-09-04', addToTransactions: true }), /vượt/);
+  const collection = a.state.listReceivableEntries(lend.debtorId).find(e => e.kind === 'collect');
+  await a.state.updateReceivableEntry(collection.id, { amount: 2000000, date: collection.date, addToTransactions: true });
+  const restarted = await createDevice(backend, { storage: a.storage, online: false });
+  assert.equal(restarted.state.financialMonth(2026, 9).receivable, 2000000);
+  assert.equal(restarted.state.financialMonth(2026, 9).closingBalance, 8000000);
+  await restarted.state.deleteReceivableEntry(collection.id);
+  assert.equal(restarted.state.financialMonth(2026, 9).closingBalance, 6000000);
+  restarted.navigator.onLine = true;
+  await restarted.state.refresh();
+  const b = await createDevice(backend, { id: 'bob' });
+  await b.state.refresh();
+  assert.equal(b.state.financialMonth(2026, 9).receivable, 4000000);
+  assert.equal(b.state.financialMonth(2026, 9).closingBalance, 6000000);
+  assert.equal(b.state.financialMonth(2026, 8).income, 0);
+  assert.equal(b.state.financialMonth(2026, 10).openingBalance, 6000000);
+  assert.equal(restarted.state.pendingSyncCount(), 0);
+});
+
+test('legacy debt links and categories are reclassified without creating cash or counting personal mirrors', async () => {
+  const backend = new Backend();
+  backend.rows.transactions = [
+    { ...txn('old-borrow'), type: 'income', category_id: 'borrow', amount: 1000 },
+    { ...txn('old-repay'), category_id: 'repay', amount: 200 },
+    { ...txn('old-lend'), amount: 300 },
+  ];
+  backend.rows.creditors = [{ id: 'c', shared: true }];
+  backend.rows.debt_entries = [{ id: 'd', creditor_id: 'c', kind: 'charge', amount: 1000, entry_date: '2026-09-15', shared: true, transaction_id: 'old-borrow' }];
+  backend.rows.debtors = [{ id: 'r', shared: true }, { id: 'mirror', user_id: 'alice', shared: false }];
+  backend.rows.receivable_entries = [
+    { id: 'l', debtor_id: 'r', kind: 'lend', amount: 300, entry_date: '2026-09-15', shared: true, transaction_id: 'old-lend' },
+    { id: 'm', debtor_id: 'mirror', kind: 'lend', amount: 1000, entry_date: '2026-09-15', user_id: 'alice', shared: false },
+  ];
+  for (const id of ['alice', 'bob']) {
+    const d = await createDevice(backend, { id });
+    await d.state.refresh();
+    const position = d.state.financialMonth(2026, 9);
+    assert.equal(position.income, 0);
+    assert.equal(position.expense, 0);
+    assert.equal(position.closingBalance, 500);
+    assert.equal(position.receivable, 300);
+    assert.equal(position.payable, 1000);
+  }
+  assert.equal(backend.rows.transactions.length, 3);
+});
+
+test('offline member borrow and repayment both retain mirror jobs before the first sync', async () => {
+  const a = await createDevice(new Backend());
+  await a.state.refresh();
+  a.navigator.onLine = false;
+  const loan = await a.state.addDebtCharge({ memberUserId: 'bob', shared: true, amount: 1000, date: '2026-09-01', addToTransactions: true });
+  await a.state.addDebtPayment(loan.creditorId, { amount: 200, date: '2026-09-02', addToTransactions: true });
+  assert.equal(a.state.getState().pendingMirrors.length, 2);
+  assert.deepEqual(clone(a.state.getState().pendingMirrors.map(j => j.debtKind)), ['charge', 'payment']);
+  assert.equal(a.state.financialMonth(2026, 9).payable, 800);
+});
+
+test('editing or deleting principal cannot leave repayments greater than the loan', async () => {
+  const a = await createDevice(new Backend(), { online: false });
+  const loan = await a.state.addReceivableLend({ debtorName: 'Borrower', shared: true, amount: 1000, date: '2026-09-01', addToTransactions: true });
+  await a.state.addReceivableCollect(loan.debtorId, { amount: 500, date: '2026-09-02', addToTransactions: true });
+  const entry = a.state.listReceivableEntries(loan.debtorId).find(e => e.kind === 'lend');
+  await assert.rejects(a.state.updateReceivableEntry(entry.id, { amount: 100, date: entry.date, addToTransactions: true }), /thấp hơn/);
+  await assert.rejects(a.state.deleteReceivableEntry(entry.id), /xử lý/);
+  await assert.rejects(a.state.deleteTransaction(loan.transactionId), /xử lý/);
+  await assert.rejects(a.state.updateTransaction(loan.transactionId, { amount: 100, date: entry.date, type: 'income' }), /thấp hơn/);
+  assert.equal(a.state.financialMonth(2026, 9).receivable, 500);
+  assert.equal(a.state.financialMonth(2026, 9).closingBalance, -500);
+});
+
+test('negative opening balance and non-cash old debt carry forward without revenue or duplicate cash', async () => {
+  const a = await createDevice(new Backend(), { online: false });
+  await a.state.addTransaction({ type: 'expense', cashKind: 'opening', amount: 2000, date: '2025-12-31' });
+  await a.state.addDebtCharge({ creditorName: 'Old debt', shared: true, amount: 4000, date: '2025-12-31', addToTransactions: false });
+  const jan = a.state.financialMonth(2026, 1);
+  assert.equal(jan.openingBalance, -2000);
+  assert.equal(jan.closingBalance, -2000);
+  assert.equal(jan.payable, 4000);
+  assert.equal(jan.expense, 0);
+  assert.equal(a.state.financialMonth(2025, 12).expense, 0);
+  await assert.rejects(a.state.addTransaction({ type: 'income', cashKind: 'opening', amount: 1, date: '2025-12-31' }), /Đã có/);
+});
+
 class Backend {
   constructor() {
     this.rows = {
