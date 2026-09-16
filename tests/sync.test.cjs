@@ -85,6 +85,7 @@ test('legacy debt links and categories are reclassified without creating cash or
   ];
   backend.rows.creditors = [{ id: 'c', shared: true }];
   backend.rows.debt_entries = [{ id: 'd', creditor_id: 'c', kind: 'charge', amount: 1000, entry_date: '2026-09-15', shared: true, transaction_id: 'old-borrow' }];
+  backend.rows.debt_entries.push({ id: 'payment', creditor_id: 'c', kind: 'payment', amount: 200, entry_date: '2026-09-15', shared: true, transaction_id: 'old-repay' });
   backend.rows.debtors = [{ id: 'r', shared: true }, { id: 'mirror', user_id: 'alice', shared: false }];
   backend.rows.receivable_entries = [
     { id: 'l', debtor_id: 'r', kind: 'lend', amount: 300, entry_date: '2026-09-15', shared: true, transaction_id: 'old-lend' },
@@ -98,7 +99,7 @@ test('legacy debt links and categories are reclassified without creating cash or
     assert.equal(position.expense, 0);
     assert.equal(position.closingBalance, 500);
     assert.equal(position.receivable, 300);
-    assert.equal(position.payable, 1000);
+    assert.equal(position.payable, 800);
   }
   assert.equal(backend.rows.transactions.length, 3);
 });
@@ -225,7 +226,7 @@ async function createDevice(backend, { id = 'alice', storage = new Map(), online
   const api = synthetic({
     getSupabaseClient: (jwt) => backend.client(jwt, device),
     callLoginFunction: async ({ identifier }) => ({ ok: true, id: identifier, role: 'member', token: token(identifier) }),
-    callAccountFunction: async () => ({ ok: true }),
+    callAccountFunction: async (jwt, body) => backend.accountFunction ? backend.accountFunction(jwt, body) : ({ ok: true }),
   }, 'api');
   const push = synthetic({ subscribeThisDevice() {}, unsubscribeThisDevice() {}, getCurrentEndpoint() {} }, 'push');
   async function load(file) {
@@ -517,4 +518,66 @@ test('offline restart reconstructs local transaction from outbox even if cache w
   const rebooted = await createDevice(backend, { storage, online: false });
   assert.equal(rebooted.state.listTransactions()[0].amount, 75000);
   assert.equal(rebooted.state.pendingSyncCount(), 2);
+});
+
+
+test('untracked repayments count as expenses; tracked principal stays excluded after sync and reload', async () => {
+  const backend = new Backend();
+  const a = await createDevice(backend);
+  await a.state.refresh();
+  a.navigator.onLine = false;
+  const loan = await a.state.addDebtCharge({ creditorName: 'Lender', shared: true, amount: 1000, date: '2026-09-01', addToTransactions: true });
+  await a.state.addDebtPayment(loan.creditorId, { amount: 200, date: '2026-09-02', categoryId: 'repay', addToTransactions: true });
+  await a.state.addTransaction({ type: 'expense', amount: 300, categoryId: 'repay', date: '2026-09-03' });
+  const check = state => {
+    const result = state.financialMonth(2026, 9);
+    assert.equal(result.expense, 300);
+    assert.equal(result.repay, 200);
+    assert.equal(result.closingBalance, 500);
+    assert.equal(result.payable, 800);
+    assert.equal(state.expenseByCategoryForMonth(2026, 9).get('repay'), 300);
+  };
+  check(a.state);
+  const restarted = await createDevice(backend, { storage: a.storage, online: false });
+  check(restarted.state);
+  restarted.navigator.onLine = true;
+  await restarted.state.refresh();
+  const b = await createDevice(backend, { id: 'bob' });
+  await b.state.refresh();
+  check(b.state);
+});
+
+test('member loans appear only in that members personal receivables; same-name outsiders do not mirror', async () => {
+  const backend = new Backend();
+  const requests = [];
+  backend.accountFunction = async (jwt, body) => {
+    requests.push(clone(body));
+    assert.equal(body.type, 'debt-mirror-add');
+    const debtorId = body.debtorId || 'mirror-bob';
+    const entryId = 'mirror-entry-' + requests.length;
+    if (!body.debtorId) (backend.rows.debtors ||= []).push({ id: debtorId, name: body.name, user_id: body.memberUserId, shared: false });
+    (backend.rows.receivable_entries ||= []).push({ id: entryId, debtor_id: debtorId, kind: body.kind, amount: body.amount, entry_date: body.date, user_id: body.memberUserId, shared: false, created_at: '2026-09-16T00:00:00.000Z' });
+    return { ok: true, debtorId, entryId };
+  };
+  const a = await createDevice(backend);
+  await a.state.refresh();
+  a.navigator.onLine = false;
+  const outside = await a.state.addDebtCharge({ creditorName: 'Bob', shared: true, amount: 3000, date: '2026-09-01', addToTransactions: true });
+  const member = await a.state.addDebtCharge({ memberUserId: 'bob', shared: true, amount: 1000, date: '2026-09-02', addToTransactions: true });
+  await a.state.addDebtPayment(member.creditorId, { amount: 200, date: '2026-09-03', addToTransactions: true });
+  assert.notEqual(outside.creditorId, member.creditorId);
+  assert.equal(a.state.getCreditor(outside.creditorId).memberUserId, null);
+  assert.equal(a.state.getState().pendingMirrors.length, 2);
+  const restarted = await createDevice(backend, { storage: a.storage, online: false });
+  restarted.navigator.onLine = true;
+  await restarted.state.refresh();
+  assert.equal(restarted.state.pendingSyncCount(), 0);
+  assert.equal(requests.length, 2);
+  assert.ok(requests.every(r => r.memberUserId === 'bob'));
+  const b = await createDevice(backend, { id: 'bob' });
+  await b.state.refresh();
+  assert.equal(b.state.totalReceivable(), 800);
+  assert.equal(b.state.financialMonth(2026, 9).receivable, 0);
+  assert.equal(b.state.financialMonth(2026, 9).payable, 3800);
+  assert.equal(restarted.state.totalReceivable(), 0);
 });

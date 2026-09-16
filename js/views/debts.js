@@ -11,7 +11,7 @@ import { pageHeader } from '../components/shell.js';
 import { openModal, confirmDialog } from '../components/modal.js';
 import { emptyState } from '../components/ui.js';
 import { toast } from '../components/toast.js';
-import { formatVND, formatDate, formatNumber, attachMoneyInput, unformatMoney } from '../utils.js';
+import { formatVND, formatDate, formatNumber, attachMoneyInput, unformatMoney, escapeHtml } from '../utils.js';
 
 // Thứ tự khai báo ở đây quyết định luôn thứ tự tab hiển thị (xem Object.entries(DIRECTIONS) trong
 // render() bên dưới) — "Nợ chung" xếp ĐẦU vì liên quan tới cả nhà, ai cũng cần thấy ngay khi vào.
@@ -500,10 +500,19 @@ function bindCounterpartNameSuggestions(cfg, sheet, inputId, listId, toggleId) {
 
 function openIncreaseForm(cfg, { counterpartId, counterpartName } = {}) {
   const locked = !!counterpartId;
+  const members = !locked && cfg.shared && cfg.api.increaseKind === 'charge' ? S.listMembers() : [];
   openModal({
     title: cfg.increaseModalTitle,
     bodyHtml: `
-      <div class="field" style="position:relative">
+      ${members.length ? `<div class="field">
+        <label for="incr-member">Mượn Nợ của ai?</label>
+        <select id="incr-member">
+          <option value="">Người ngoài ứng dụng</option>
+          ${members.map(u => `<option value="${escapeHtml(u.id)}">${escapeHtml(u.name)}${u.username ? ' (' + escapeHtml(u.username) + ')' : ''}</option>`).join('')}
+        </select>
+        <p class="field-hint" id="incr-member-hint">Người ngoài: nhập tên chủ nợ bên dưới.</p>
+      </div>` : ''}
+      <div class="field" id="incr-external-field" style="position:relative">
         <label>${cfg.counterpartLabel}</label>
         ${locked
           ? `<input id="incr-counterpart-name" value="${counterpartName.replace(/"/g, '&quot;')}" readonly/>`
@@ -524,20 +533,29 @@ function openIncreaseForm(cfg, { counterpartId, counterpartName } = {}) {
       attachMoneyInput(sheet.querySelector('#incr-amount'));
       bindAddToTxnToggle(sheet, 'incr');
       if (!locked) bindCounterpartNameSuggestions(cfg, sheet, 'incr-counterpart-name', 'incr-counterpart-list', 'incr-counterpart-toggle');
+      const memberSelect = sheet.querySelector('#incr-member');
+      if (memberSelect) memberSelect.addEventListener('change', () => {
+        sheet.querySelector('#incr-external-field').hidden = !!memberSelect.value;
+        sheet.querySelector('#incr-member-hint').textContent = memberSelect.value
+          ? 'Tự ghi vào “Tôi phải thu” của thành viên được chọn sau khi đồng bộ. Không cần nhập lại ở tài khoản đó.'
+          : 'Người ngoài: nhập tên chủ nợ bên dưới.';
+      });
       sheet.querySelector('[data-save]').addEventListener('click', async (event) => {
         const saveButton = event.currentTarget;
         if (saveButton.disabled) return;
         const nameVal = locked ? counterpartName : sheet.querySelector('#incr-counterpart-name').value.trim();
+        const memberUserId = memberSelect?.value || null;
         const date = sheet.querySelector('#incr-date').value;
         const description = sheet.querySelector('#incr-desc').value.trim();
         const amount = unformatMoney(sheet.querySelector('#incr-amount').value);
         const addToTransactions = sheet.querySelector('#incr-add-txn').checked;
         const categoryId = sheet.querySelector('#incr-cat').value;
         const errEl = sheet.querySelector('#incr-error');
-        if (!nameVal) { errEl.textContent = `Cần nhập tên ${cfg.counterpartLabel.toLowerCase()}.`; errEl.style.display = 'block'; return; }
+        if (!memberUserId && !nameVal) { errEl.textContent = `Cần nhập tên ${cfg.counterpartLabel.toLowerCase()}.`; errEl.style.display = 'block'; return; }
         const payload = {
           [cfg.api.counterpartIdKey]: locked ? counterpartId : undefined,
-          [cfg.api.counterpartNameKey]: locked ? undefined : nameVal,
+          [cfg.api.counterpartNameKey]: locked || memberUserId ? undefined : nameVal,
+          memberUserId,
           amount, date, description, categoryId, addToTransactions,
         };
         saveButton.disabled = true;

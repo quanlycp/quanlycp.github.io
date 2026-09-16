@@ -14,7 +14,7 @@
 // tới Supabase (khác gốc) hay các phương thức khác (POST/PATCH/DELETE...) đều
 // KHÔNG bị chặn ở đây (không gọi event.respondWith), để state.js tự xử lý mất
 // mạng bằng cơ chế outbox/đồng bộ riêng của nó.
-const CACHE_NAME = 'chitieu-shell-2026-09-16-finance-v3';
+const CACHE_NAME = 'chitieu-shell-2026-09-16-finance-v3.1';
 const APP_SHELL = [
   "./",
   "index.html",

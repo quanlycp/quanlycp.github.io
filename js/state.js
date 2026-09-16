@@ -1033,7 +1033,7 @@ export function effectiveBudget(categoryId, year, month) {
 /** Danh sách đầy đủ: mỗi danh mục chi tiêu + hạn mức đang áp dụng + đã chi trong tháng + % đã dùng. */
 export function budgetOverviewForMonth(year, month) {
   const spentMap = expenseByCategoryForMonth(year, month);
-  return listCategories({ type: 'expense' }).filter(cat => !cat.special).map((cat) => {
+  return listCategories({ type: 'expense' }).filter(cat => cat.special !== 'borrow').map((cat) => {
     const limit = effectiveBudget(cat.id, year, month);
     const spent = spentMap.get(cat.id) || 0;
     return { category: cat, limit, spent, percent: limit ? Math.round((spent / limit) * 100) : null, over: limit != null && spent > limit };

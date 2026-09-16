@@ -33,3 +33,9 @@ Nhập/sửa/xóa giao dịch và công nợ phải thu/phải trả dùng outbo
 `node --experimental-vm-modules --test tests/*.test.cjs`
 
 Bao gồm ví dụ 5 triệu thu, 3 triệu chi, vay 10 triệu, trả gốc 2 triệu; chuyển tháng/năm; cho vay/thu hồi ngoại tuyến; khởi động lại; hai thiết bị; dữ liệu cũ; nợ riêng đối ứng; số dư âm ban đầu; chặn thu vượt nợ và sửa/xóa gốc thấp hơn khoản đã thanh toán. Kiểm thử đồng bộ dùng máy chủ giả lập, không tạo giao dịch thử trên dữ liệu thật.
+
+## Bổ sung finance-v3.1
+
+- Ghi nợ chung mới: chọn thành viên cụ thể để tự ghi khoản đối ứng vào “Tôi phải thu” của đúng tài khoản sau đồng bộ. Chọn người ngoài thì chỉ ghi nợ chung; tên giống thành viên không tự tạo liên kết.
+- “Trả khoản nợ khác (không theo dõi trong Công nợ)” được tính vào chi phí, biểu đồ và ngân sách như khoản chi bình thường. Khoản trả gắn với nợ chung đang theo dõi vẫn chỉ giảm tiền và nợ gốc. Quy tắc này cũng áp dụng cho giao dịch cũ thuộc danh mục Trả nợ không có liên kết nợ chung.
+- Hai thẻ tổng quan dùng nhãn “Nợ phải trả”, “Nợ phải thu”; nút thao tác dùng “Mượn Nợ”, “Trả Nợ”. Phạm vi số liệu vẫn là quỹ chung.

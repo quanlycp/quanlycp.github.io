@@ -36,14 +36,14 @@ export function render(contentEl) {
       <div class="finance-hero-footer"><span>Chênh lệch thu–chi tháng này</span><strong>${formatVND(balance)}</strong></div>
     </section>
     <div class="finance-debts mb-16">
-      <a href="#/no" id="go-payable" class="card finance-debt"><span class="finance-icon payable">${icon('creditCard')}</span><div><span class="text-sm text-muted">Nợ phải trả · quỹ chung</span><strong>${formatVND(position.payable)}</strong><small>Tiếp tục theo dõi đến khi trả hết</small></div>${icon('chevronRight', 'icon-sm')}</a>
-      <a href="#/no" id="go-receivable" class="card finance-debt"><span class="finance-icon receivable">${icon('trendingUp')}</span><div><span class="text-sm text-muted">Nợ phải thu · quỹ chung</span><strong>${formatVND(position.receivable)}</strong><small>Chưa cộng vào tiền hiện có</small></div>${icon('chevronRight', 'icon-sm')}</a>
+      <a href="#/no" id="go-payable" class="card finance-debt"><span class="finance-icon payable">${icon('creditCard')}</span><div><span class="text-sm text-muted">Nợ phải trả</span><strong>${formatVND(position.payable)}</strong><small>Tiếp tục theo dõi đến khi trả hết</small></div>${icon('chevronRight', 'icon-sm')}</a>
+      <a href="#/no" id="go-receivable" class="card finance-debt"><span class="finance-icon receivable">${icon('trendingUp')}</span><div><span class="text-sm text-muted">Nợ phải thu</span><strong>${formatVND(position.receivable)}</strong><small>Chưa cộng vào tiền hiện có</small></div>${icon('chevronRight', 'icon-sm')}</a>
     </div>
     <div class="finance-actions mb-16">
       <button class="btn btn-primary" id="quick-expense">${icon('plus', 'icon-sm')} Ghi chi tiêu</button>
       <button class="btn btn-outline" id="quick-income">${icon('trendingUp', 'icon-sm')} Ghi thu nhập</button>
-      <button class="btn btn-outline" id="quick-borrow">${icon('creditCard', 'icon-sm')} Mượn tiền</button>
-      <button class="btn btn-outline" id="quick-repay">${icon('check', 'icon-sm')} Trả gốc</button>
+      <button class="btn btn-outline" id="quick-borrow">${icon('creditCard', 'icon-sm')} Mượn Nợ</button>
+      <button class="btn btn-outline" id="quick-repay">${icon('check', 'icon-sm')} Trả Nợ</button>
     </div>
     <section class="card card-pad mb-16">
       <div class="section-head"><h2>Thu–chi ${MONTH_NAMES[month - 1].toLowerCase()}</h2><span class="text-sm text-muted">Không gồm tiền gốc vay/nợ</span></div>

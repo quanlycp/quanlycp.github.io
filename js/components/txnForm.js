@@ -171,13 +171,13 @@ function repayFieldsHtml() {
   const optionsHtml = sharedDebts.map((c) => `<option value="${c.id}" data-balance="${c.balance}">${c.name} — còn ${formatVND(c.balance)}</option>`).join('');
   return `
     <div class="field">
-      <p class="finance-note mb-12">Trả gốc làm giảm số dư tiền và công nợ, không tính vào chi phí. Nếu trả lãi, ghi riêng khoản chi lãi vay.</p><label>Trả cho khoản nợ nào</label>
+      <p class="finance-note mb-12">Trả Nợ đang theo dõi: giảm tiền và công nợ, không tính vào chi phí. Trả khoản nợ khác: ghi chi phí bình thường.</p><label>Trả cho khoản nợ nào</label>
       <select id="debt-repay-select">
         <option value="">Trả khoản nợ khác (không theo dõi trong Công nợ)</option>
         ${optionsHtml}
       </select>
       <div class="field-hint" id="debt-repay-hint" style="display:none"></div>
-      ${!sharedDebts.length ? `<div class="field-hint">Chưa có khoản Nợ chung nào đang theo dõi — chọn "Mượn nợ" ở khoản thu trước, hoặc ghi khoản trả gốc chưa được theo dõi.</div>` : ''}
+      ${!sharedDebts.length ? `<div class="field-hint">Chưa có khoản Nợ chung nào đang theo dõi — chọn "Mượn nợ" ở khoản thu trước, hoặc ghi chi phí trả khoản nợ khác.</div>` : ''}
     </div>
   `;
 }
@@ -206,7 +206,8 @@ function bindDebtFieldEvents(container) {
         hint.textContent = `Nợ còn ${formatVND(Number(opt.dataset.balance))} — không nhập số tiền vượt quá số này.`;
         hint.style.display = '';
       } else {
-        hint.style.display = 'none';
+        hint.textContent = 'Khoản này được tính vào chi phí và giảm số dư tiền; không thay đổi công nợ đang theo dõi.';
+        hint.style.display = '';
       }
     }
     repaySelect.addEventListener('change', syncHint);

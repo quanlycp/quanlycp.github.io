@@ -2,7 +2,7 @@
 // New cash transactions carry an immutable kind in their text ID (existing DB schema).
 // Legacy rows use their debt link or system category; notes are never parsed as metadata.
 export const FINANCE_LABELS = {
-  borrow: 'Tiền vay vào', repay: 'Trả nợ gốc', lend: 'Tiền cho vay',
+  borrow: 'Mượn Nợ', repay: 'Trả Nợ', lend: 'Tiền cho vay',
   collect: 'Thu hồi gốc', opening: 'Số dư ban đầu', income: 'Doanh thu / thu nhập', expense: 'Chi phí',
 };
 
@@ -14,7 +14,9 @@ export function transactionKind(state, txn) {
   const receivable = state.receivableEntries.find(e => e.shared && e.transactionId === txn.id);
   if (receivable) return receivable.kind === 'lend' ? 'lend' : 'collect';
   const special = state.categories.find(c => c.id === txn.categoryId)?.special;
-  return ['borrow', 'repay'].includes(special) ? special : txn.type;
+  // A repayment without a tracked debt is an ordinary expense. Tracked legacy
+  // repayments were matched above; new ones also retain their immutable ID kind.
+  return special === 'borrow' ? 'borrow' : txn.type;
 }
 
 export function isBookTransaction(state, txn) {

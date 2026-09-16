@@ -50,7 +50,7 @@ export function render(contentEl) {
       <div class="oc-line"><span>Chênh lệch thu–chi</span><b>${formatVND(cash.balance)}</b></div>
       <hr class="finance-divider">
       <div class="oc-line"><span>Tiền vay nhận</span><b>+${formatVND(cash.borrow)}</b></div>
-      <div class="oc-line"><span>Trả nợ gốc</span><b>−${formatVND(cash.repay)}</b></div>
+      <div class="oc-line"><span>Trả Nợ đang theo dõi</span><b>−${formatVND(cash.repay)}</b></div>
       <div class="oc-line"><span>Tiền cho vay</span><b>−${formatVND(cash.lend)}</b></div>
       <div class="oc-line"><span>Thu hồi gốc cho vay</span><b>+${formatVND(cash.collect)}</b></div>
       ${cash.opening ? '<div class="oc-line"><span>Số dư ban đầu đã khai báo trong kỳ</span><b>' + formatVND(cash.opening) + '</b></div>' : ''}
